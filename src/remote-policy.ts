@@ -180,7 +180,6 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   commandOutput: "mirror",
   expandCommandOutputs: "mirror",
   steerByDefault: "mirror",
-  setAllToolDetails: "mirror",
   focusInput: "mirror",
   sessions: "mirror",
   sessionDot: "mirror",

@@ -138,7 +138,7 @@ When Grok delegates work to a subagent, the chat shows a card with the task and 
 <details>
 <summary><strong>Tool calls</strong> — every read, edit & command inline; expand for full details</summary>
 
-Every action appears as a category-iconed row, batched and summarized ("Explored 5 items", "Edited 2 files"); a failed tool turns red with the reason. Edits show a `+N −M` change count and expand to an inline diff at the file's real line numbers; shell commands expand to an **IN/OUT block** with the full command and its complete output — exactly what Grok received, exit code included. To audit an Auto-accept run, pre-expand everything with `grok.expandCommandOutputs`, or **Grok: Expand All Tool Details** from the Command Palette.
+Every action appears as a category-iconed row, batched and summarized ("Explored 5 items", "Edited 2 files"); a failed tool turns red with the reason. Edits show a `+N −M` change count and expand to an inline diff at the file's real line numbers; shell commands expand to an **IN/OUT block** with the full command and its complete output — exactly what Grok received, exit code included. Turn on **Expand tool details** (`grok.expandCommandOutputs`) for a live accordion — only the currently-running tool's details open while a batch runs; panels collapse again when the batch finishes.
 
 ![A tool batch with a command expanded to its IN/OUT block](docs/screenshots/tool_calls.png)
 
@@ -225,7 +225,7 @@ Grok opens in the **Secondary Side Bar** (right side, next to other AI tools). P
 | `grok.includeActiveFileByDefault` | `true` | Auto-add the active editor as a context chip. |
 | `grok.useCtrlEnterToSend` | `false` | When true, Enter inserts a newline and Ctrl/Cmd+Enter sends. |
 | `grok.showThinking` | `false` | Show Grok's reasoning (thinking) traces in chat. Off shows a *Thinking…* stand-in. Also toggleable live from gear → Config & debug. |
-| `grok.expandCommandOutputs` | `false` | Expand tool details by default — each shell command's IN/OUT block and each edit's inline diff (useful for auditing Auto-accept sessions). Tool groups still collapse by default. Toggle live from gear → Config & debug → **Expand tool details**. (Setting key kept for compatibility.) |
+| `grok.expandCommandOutputs` | `false` | Live tool-detail accordion (default off). On: while a batch runs, auto-open the current tool's IN/OUT/diff (one at a time); collapse when the batch finishes. Off: everything stays collapsed until you click. Toggle live from gear → Config & debug → **Expand tool details**. |
 | `grok.steerByDefault` | `false` | Send straight into Grok's running turn instead of queueing. Off: a message sent mid-turn waits and flushes when the turn ends (steer it on demand with the **Steer** button). On: it skips the queue and redirects Grok immediately. Never cancels the turn or discards work in progress; plain text only (no chips, editor context, or `/commands`). Toggle live from gear → Config & debug → **Steer by default**. |
 | `grok.telemetry.enabled` | `true` | Send anonymous, privacy-first usage telemetry (see [Privacy](#privacy)). Also honors VS Code's global `telemetry.telemetryLevel`. |
 | `grok.chatFontScale` | `100` | Zoom for the chat panel only, as a percent (`150`, `200`, …). Scales the whole chat UI without rescaling the rest of VS Code (unlike `Ctrl/Cmd+Shift+=`). Applies live; supports User (global) and Workspace (local) scope. |
@@ -256,8 +256,6 @@ VS Code commands (not Grok slash commands):
 | `Grok: Send File` | Add a file to the composer (right-clicked file, active editor, or a file picker) |
 | `Add Selection to Grok` | Attach the selected lines as a snippet chip in the composer |
 | `Grok: Insert @-Mention` | Insert an `@`-mention for the active file into the composer |
-| `Grok: Expand All Tool Details (This Session)` | Open every tool group, command IN/OUT box, and edit inline diff, and keep new ones open — this session only |
-| `Grok: Collapse All Tool Details (This Session)` | Collapse them all, and keep new ones collapsed — this session only |
 | `Grok: Show Logs` | Open the Grok output channel (ACP messages, errors) |
 | `Grok: Log Out` | Sign out of the Grok CLI (`grok logout`) and return to the sign-in screen |
 

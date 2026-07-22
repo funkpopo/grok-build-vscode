@@ -119,14 +119,10 @@ export type HostMsg =
   // host-side at terminal/release (the extension runs the commands, so the
   // buffer is exactly what grok received). exitCode null = killed/cancelled.
   | { type: "commandOutput"; command: string; output: string; exitCode: number | null; truncated: boolean }
-  // grok.expandCommandOutputs — pre-expand every command's IN/OUT detail.
+  // grok.expandCommandOutputs — live tool-detail accordion while a batch runs.
   | { type: "expandCommandOutputs"; value: boolean }
   // grok.steerByDefault — send-while-busy skips the queue and steers (#52).
   | { type: "steerByDefault"; value: boolean }
-  // On-demand audit: expand (open:true) / collapse (open:false) EVERY tool group
-  // and command IN/OUT box in the focused session at once. Ephemeral (not
-  // persisted) — the Command Palette "Grok: Expand/Collapse All Tool Details".
-  | { type: "setAllToolDetails"; open: boolean }
   // Move keyboard focus into the composer input (#43) — posted after Send
   // Selection / Send File / @-mention so the user can type a prompt right away.
   // Ephemeral UI action, not session-scoped (goes via `post`, never buffered).
@@ -228,7 +224,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   agentError: true, agentEnd: true, exit: true, setBusy: true, summarizing: true,
   sessionContext: true, clearMessages: true, onboarding: true, error: true,
   xaiNotification: true, subagentUpdate: true, commandOutput: true, expandCommandOutputs: true, steerByDefault: true,
-  setAllToolDetails: true, focusInput: true, sessions: true, sessionDot: true, queuedSends: true,
+  focusInput: true, sessions: true, sessionDot: true, queuedSends: true,
   steerUnavailable: true, usage: true,
 };
 

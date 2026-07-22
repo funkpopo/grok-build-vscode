@@ -216,21 +216,18 @@
     // host's commandOutput (snapshotted at terminal/release, #41) attaches to
     // the oldest un-served row with the exact same command string (FIFO).
     pendingCommandDetails: [],
-    // grok.expandCommandOutputs (persisted, global): the standing DEFAULT for
-    // new content — command IN/OUT details pre-open, and command-bearing groups
-    // auto-open. Command scope only (explore/edit groups stay collapsed).
+    // grok.expandCommandOutputs (persisted, global; gear → Expand tool details).
+    // Live-only accordion while a tool batch runs:
+    //   OFF (default) — nothing auto-opens; click a row to expand just that one.
+    //   ON — open the in-progress group + only the currently-focused tool's
+    //     IN/OUT or diff (one open slot; next expandable tool takes it). When
+    //     the batch settles, panels collapse again (unless the user toggled
+    //     that group/row). Finished / restored content never auto-expands.
     expandCommandOutputs: false,
     // grok.steerByDefault (persisted, global): when true a message sent while
     // grok is working SKIPS the queue and is interjected into the running turn.
     // False = today's behavior (queue, with an on-demand Steer button).
     steerByDefault: false,
-    // toolExpandOverride (per-session, in-memory): the Command Palette
-    // Expand/Collapse All latch. null = follow the setting above; true/false =
-    // force ALL groups + details open/closed for this session, and keep applying
-    // to new content as it streams in (last action wins vs the setting). Rides
-    // the session's replay buffer, so it survives focus-swaps but resets on a
-    // cold reopen from history — see resetForNewSession + the emit in sidebar.ts.
-    toolExpandOverride: null,
   };
 
   // Matches any version of the extension's primer (v1, v2, …). Used during
@@ -1346,17 +1343,13 @@
         renderConfigDebugPanel(); // re-render so the switch reflects the new state
       },
     );
-    // Expand tool details (#41/#45) — the persisted default: pre-open every tool
-    // detail surface (a command's IN/OUT block, an edit's inline diff) + the
-    // groups that hold one. Named to match the "Expand/Collapse All Tool Details"
-    // commands. Flipping it clears the per-session Expand/Collapse All latch so the
-    // setting takes over (last action wins). Persisted via grok.expandCommandOutputs
-    // (the key is unchanged — only the user-facing label widened).
+    // Expand tool details (#41/#45) — live accordion only: open the current
+    // tool's IN/OUT or diff while a batch runs (one slot). Off = everything
+    // stays collapsed until you click. Persisted via grok.expandCommandOutputs.
     addGearItem(
-      `<span>Expand tool details</span><span class="popover-switch${state.expandCommandOutputs ? " on" : ""}" role="switch" aria-checked="${state.expandCommandOutputs}"><span class="popover-switch-knob"></span></span>`,
+      `<span title="While Grok runs: auto-open the current tool's details (accordion — only one open at a time). When the batch finishes, panels collapse. Off: everything stays collapsed until you click.">Expand tool details</span><span class="popover-switch${state.expandCommandOutputs ? " on" : ""}" role="switch" aria-checked="${state.expandCommandOutputs}"><span class="popover-switch-knob"></span></span>`,
       () => {
         state.expandCommandOutputs = !state.expandCommandOutputs;
-        state.toolExpandOverride = null;
         applyExpandCommandOutputs();
         vscode.postMessage({ type: "setExpandCommandOutputs", value: state.expandCommandOutputs });
         renderConfigDebugPanel();
@@ -1767,7 +1760,6 @@
     state.questionToolCalls.clear();
     state.restoredCardsByToolCallId.clear();
     state.pendingCommandDetails = [];
-    state.toolExpandOverride = null; // the Expand/Collapse All latch is per-session; a swap/restore starts clean (the replay buffer re-applies it for a warm re-focus)
     state.turnAgentActionsEl = null;
     state.activeAgentEl = null;
     state.activeAgentRaw = "";
@@ -2205,6 +2197,9 @@
     const el = state.activeToolGroupEl;
     const calls = el._calls || [];
 
+    // Clear live-run chrome before settling (running pill, row pulse, OUT placeholder).
+    clearToolRunningState(el);
+
     // A lone edit/write is NOT flattened to a `.tool-flat` (icon + label only). The
     // edit's review surface (the `+A −R` stat + the expandable inline diff) is
     // attached to the tool-item in the group body; on restore
@@ -2230,6 +2225,8 @@
         if (chev) flat.appendChild(chev);
         flat.appendChild(detailsEl);
         wireCommandToggle(flat, detailsEl);
+        // Live accordion ends with the batch — collapse unless the user toggled.
+        if (!flat._userToggled) setDetailExpanded(flat, false);
       }
       el.replaceWith(flat);
       const fail = calls[0].toolCallId && state.toolFailuresById.get(calls[0].toolCallId);
@@ -2240,13 +2237,77 @@
       const label = hdr.querySelector(".tool-group-label");
       label.textContent = summarizeTools(calls); // wipes the totals slot…
       paintGroupDiffTotals(el); // …so "Edited N files" re-gains its "· +A −R" roll-up
-      // Settle the finished group to its effective expand state: the latch if
-      // set, else auto-open when it has a command/diff detail (Expand tool details).
-      // Skipped once the user has toggled this group themselves — expanding a
-      // running batch to watch it must not be undone the moment it finishes.
-      if (!el._userToggled) setGroupExpanded(el, groupShouldExpand(el));
+      // Live accordion ends here. Auto-collapse unless the user toggled this
+      // group/row mid-run (their intent survives settle).
+      if (!el._userToggled) setGroupExpanded(el, false);
+      for (const row of el.querySelectorAll(".has-details")) {
+        if (!row._userToggled) setDetailExpanded(row, false);
+      }
     }
     state.activeToolGroupEl = null;
+  }
+
+  // Drop every live-run affordance on a tool group (row pulse, running pill,
+  // cmd OUT "Running…" placeholder) so a settled batch looks finished.
+  function clearToolRunningState(el) {
+    if (!el) return;
+    for (const row of el.querySelectorAll(".tool-running")) row.classList.remove("tool-running");
+    for (const pill of el.querySelectorAll(".tool-run-pill")) pill.remove();
+    for (const ph of el.querySelectorAll(".cmd-running")) ph.remove();
+  }
+
+  // Terminal ACP statuses — the tool is done (success, fail, or cancel).
+  function toolStatusIsTerminal(status) {
+    const s = String(status || "").toLowerCase();
+    return s === "completed" || s === "failed" || s === "cancelled";
+  }
+
+  // Per-row Running chrome. Tracked by actual in-flight state (cleared only when
+  // THAT tool settles) — never "move the pill to the newest issued row", which
+  // made Running stick on the last list item while earlier tools still ran.
+  function setToolRowRunning(item, running) {
+    if (!item) return;
+    if (running) {
+      item.classList.add("tool-running");
+      if (!state.replaying && !item.querySelector(".tool-run-pill")) {
+        const pill = document.createElement("span");
+        pill.className = "tool-run-pill";
+        pill.setAttribute("aria-hidden", "true");
+        pill.textContent = "Running";
+        // After the label (first child), before chevron/details.
+        const label = item.querySelector(".tool-item-label");
+        if (label && label.nextSibling) item.insertBefore(pill, label.nextSibling);
+        else item.appendChild(pill);
+      }
+    } else {
+      item.classList.remove("tool-running");
+      const pill = item.querySelector(".tool-run-pill");
+      if (pill) pill.remove();
+    }
+  }
+
+  // Tool finished (completed / failed / cancelled / command output). Clears
+  // Running on that row only, then re-points the live accordion at the oldest
+  // still-in-flight sibling so focus follows the tools that are actually left.
+  function settleToolCall(toolCallId) {
+    if (!toolCallId) return;
+    const item = state.toolItemsByToolCallId.get(toolCallId);
+    if (!item) return;
+    const wasRunning = item.classList.contains("tool-running");
+    setToolRowRunning(item, false);
+    // Live OUT "Running…" placeholder goes with the row's running state when no
+    // real OUT has been written yet (reads/searches never get one).
+    const ph = item.querySelector(".cmd-running");
+    if (ph && !item.querySelector(".cmd-out:not(.cmd-running)")) ph.remove();
+    if (!wasRunning || state.replaying) return;
+    const group = item.closest && item.closest(".tool-group.in-progress");
+    if (!group) return;
+    // Prefer the oldest still-running detail row (FIFO of actual work), else any
+    // still-running row — keeps the open panel on real work, not the last issue.
+    const still =
+      group.querySelector(".tool-item.tool-running.has-details") ||
+      group.querySelector(".tool-item.tool-running");
+    if (still) accordionLiveDetails(still);
   }
 
   function addToToolGroup(call) {
@@ -2265,6 +2326,9 @@
       flushAgent();
       state.activeAgentEl = null;
       state.activeAgentRaw = "";
+      // New step: when Expand tool details is off, collapse any leftover open
+      // groups from earlier steps (setting-on keeps finished ones for audit).
+      collapsePriorLiveGroups();
       const el = document.createElement("div");
       el.className = "tool-group in-progress";
       el._calls = [];
@@ -2277,9 +2341,10 @@
       el.appendChild(body);
       messagesEl.appendChild(el);
       state.activeToolGroupEl = el;
-      // Expand-all latched → open the group the moment it appears, mid-run
-      // (setGroupExpanded's `.expanded` class also reveals the chevron via CSS).
-      if (state.toolExpandOverride === true) setGroupExpanded(el, true);
+      // Live accordion (Expand tool details ON) auto-opens the batch; off stays
+      // collapsed. setGroupExpanded also sets `.expanded`, which reveals the
+      // chevron mid-run via CSS.
+      if (!el._userToggled) setGroupExpanded(el, liveGroupShouldExpand(el));
     }
 
     const el = state.activeToolGroupEl;
@@ -2298,6 +2363,11 @@
     item.appendChild(itemLabel);
     body.appendChild(item);
     if (call.toolCallId) state.toolItemsByToolCallId.set(call.toolCallId, item);
+    // Mark THIS row running without clearing siblings — earlier tools stay
+    // Running until their own completion. Replay / already-terminal snapshots
+    // skip the live chrome.
+    const alreadyDone = state.replaying || toolStatusIsTerminal(call.status);
+    if (!alreadyDone) setToolRowRunning(item, true);
     // #41: a shell command's row carries an expandable detail — the FULL
     // command text immediately (grok truncates its titles), and the complete
     // captured output once the terminal finishes.
@@ -2306,7 +2376,7 @@
 
     hdr.innerHTML =
       toolIconFor(el._calls) +
-      `<span class="tool-group-label">${escapeHtml(inProgressLabel(call))}</span>` +
+      `<span class="tool-group-label tool-live-label">${escapeHtml(inProgressLabel(call))}</span>` +
       `<span class="tool-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>` +
       `<span class="tool-chevron" aria-hidden="true">${ICON.chevronRight}</span>`;
     // The rebuild above wipes the header's totals slot — re-paint it, or an edit
@@ -2321,25 +2391,29 @@
       "cmd-single",
       el._calls.length === 1 && !!(call.rawInput && (call.rawInput.command || call.rawInput.cmd)),
     );
+    // Keep the batch open while tools stream in only when Expand tool details
+    // is on — unless the user collapsed it themselves.
+    if (!el._userToggled) setGroupExpanded(el, liveGroupShouldExpand(el));
+    // Live accordion (gated on Expand tool details): focus the newly issued
+    // row's detail; previous detail panels collapse. No-op when the setting is off.
+    if (!alreadyDone) accordionLiveDetails(item);
     hdr.onclick = () => {
-      const expanded = !body.hidden;
+      // Toggle off the expanded class (not `.hidden`) so a mid-leave re-open works
+      // while the leave animation still has hidden=false.
+      const open = !el.classList.contains("expanded");
       // The user has stated an intent for THIS group: don't let closeToolGroup's
-      // automatic settle undo it when the batch finishes. An explicit global
-      // action (the gear setting or the Expand/Collapse All latch) still wins —
-      // that runs through applyExpandCommandOutputs, which force-applies.
+      // automatic settle undo it when the batch finishes.
       el._userToggled = true;
-      body.hidden = expanded;
-      el.classList.toggle("expanded", !expanded);
-      if (!expanded && el.classList.contains("cmd-single")) {
+      setGroupExpanded(el, open);
+      if (open && el.classList.contains("cmd-single")) {
         const d = body.querySelector(".tool-item-details");
         const row = body.querySelector(".tool-item.has-details");
-        if (d && d.hidden) {
-          d.hidden = false;
-          if (row) row.classList.add("expanded");
+        if (d && (d.hidden || !(row && row.classList.contains("expanded")))) {
+          setDetailExpanded(row || d.parentElement, true);
         }
       }
     };
-    scrollToBottom();
+    pinContent();
   }
 
   // #41: expandable per-command detail — a Claude-Code-style IN/OUT block on
@@ -2350,59 +2424,180 @@
   // the row carries the same chevron + hover affordance as a tool-group
   // header. Shared by grouped rows and the lone flat row (closeToolGroup
   // moves the chevron + details nodes into the flat form).
-  // Effective expand state, given the per-session latch (toolExpandOverride)
-  // takes precedence over the persisted grok.expandCommandOutputs default.
-  //   - override set  → force everything to the override (all groups, all boxes).
-  //   - override null → the setting: every detail box (command IN/OUT, edit diff)
-  //                     opens, and only GROUPS that HOLD a detail auto-open —
-  //                     command or edit groups, but not read/explore-only ones.
-  // `groupShouldExpand` needs the element to decide the has-detail case;
-  // `detailShouldExpand` is group-agnostic.
-  function groupShouldExpand(el) {
-    if (state.toolExpandOverride !== null) return state.toolExpandOverride;
-    return state.expandCommandOutputs && !!(el && el.querySelector(".has-details"));
+  //
+  // Expand tool details is LIVE-ACCORDION ONLY: while a batch is in progress
+  // and the setting is on, open the group body + a single detail slot. Finished
+  // / restored content never auto-expands (click to open).
+
+  // Live group body: auto-open only while Expand tool details is on and the
+  // batch is still in progress. Replay stays collapsed mid-batch.
+  function liveGroupShouldExpand(el) {
+    if (state.replaying) return false;
+    if (el && el.classList.contains("in-progress")) return !!state.expandCommandOutputs;
+    return false;
   }
-  function detailShouldExpand() {
-    if (state.toolExpandOverride !== null) return state.toolExpandOverride;
-    return state.expandCommandOutputs;
+
+  // Resolve the single live accordion focus row inside an in-progress group:
+  //   1. preferred, if it already has a detail surface (command IN/OUT / edit diff)
+  //   2. else the newest still-running detail row (DOM order ≈ issue order)
+  //   3. else null — callers must NOT collapse existing panels when there's
+  //      nothing expandable to focus (e.g. a read/search after a command would
+  //      otherwise blank the open IN/OUT mid-batch).
+  function resolveAccordionTarget(group, preferred) {
+    if (!group) return null;
+    if (preferred && preferred.classList && preferred.classList.contains("has-details")) {
+      return preferred;
+    }
+    const running = group.querySelectorAll(".tool-item.tool-running.has-details");
+    if (running.length) return running[running.length - 1];
+    return null;
   }
+
+  // Live accordion: at most ONE detail panel open in an in-progress group.
+  // Bound to Expand tool details — no-op when the setting is off. Skips
+  // user-toggled rows.
+  //
+  // Critical: only collapse siblings when we have a real expandable target.
+  // Issuing a plain read/search must not yank the open slot away from a still-
+  // useful command/edit panel.
+  function accordionLiveDetails(activeItem) {
+    if (state.replaying) return;
+    if (!state.expandCommandOutputs) return;
+    const group =
+      (activeItem && activeItem.closest && activeItem.closest(".tool-group.in-progress")) ||
+      (state.activeToolGroupEl && state.activeToolGroupEl.classList.contains("in-progress")
+        ? state.activeToolGroupEl
+        : null);
+    if (!group) return;
+
+    const target = resolveAccordionTarget(group, activeItem);
+    if (!target) return; // nothing expandable to focus — leave open panels alone
+
+    for (const row of group.querySelectorAll(".has-details")) {
+      if (row === target) continue;
+      if (row._userToggled) continue;
+      setDetailExpanded(row, false);
+    }
+    if (!target._userToggled) setDetailExpanded(target, true);
+  }
+
+  // When a fresh live batch starts, collapse prior groups still open from
+  // earlier steps (manual expands, or a previous batch the user left open).
+  // Skips user-toggled groups so deliberate peeks stay put.
+  function collapsePriorLiveGroups() {
+    if (state.replaying) return;
+    for (const g of messagesEl.querySelectorAll(".tool-group.expanded")) {
+      if (g === state.activeToolGroupEl) continue;
+      if (g._userToggled) continue;
+      setGroupExpanded(g, false);
+      for (const row of g.querySelectorAll(".has-details")) {
+        if (!row._userToggled) setDetailExpanded(row, false);
+      }
+    }
+  }
+  // Real Chromium webviews expose the Web Animations API; happy-dom (tests)
+  // does not. When animations can't run, collapse must hide synchronously so
+  // DOM tests that assert `.hidden` still pass. Prefer-reduced-motion also
+  // takes the instant path.
+  function canAnimatePanels() {
+    try {
+      if (typeof matchMedia === "function" &&
+          matchMedia("(prefers-reduced-motion: reduce)").matches) {
+        return false;
+      }
+    } catch (_) { /* matchMedia unavailable */ }
+    return typeof Element !== "undefined" &&
+      typeof Element.prototype.getAnimations === "function";
+  }
+
+  // Cancel an in-flight collapse (user re-opened mid-leave, or a second
+  // settle raced the first). Clears timer + generation so a late finish is a no-op.
+  function cancelPanelHide(panel) {
+    if (!panel) return;
+    if (panel._panelHideTimer) {
+      clearTimeout(panel._panelHideTimer);
+      panel._panelHideTimer = 0;
+    }
+    panel._panelHideGen = (panel._panelHideGen || 0) + 1;
+  }
+
+  // Play enter animation on open. Collapse hides immediately — a leave fade
+  // that stayed in flow (opacity→0, full height for ~140ms) left a multi-row
+  // ghost gap between older chat content and newly appended tool rows.
+  function setPanelOpen(panel, open) {
+    if (!panel) return;
+    const collapsing = panel.classList.contains("tool-panel-anim-out");
+    const wasOpen = !panel.hidden && !collapsing;
+    if (wasOpen === open) return;
+
+    cancelPanelHide(panel);
+    panel.classList.remove("tool-panel-anim-in", "tool-panel-anim-out");
+
+    if (open) {
+      panel.hidden = false;
+      // Force reflow so re-opening after a collapse restarts the enter keyframes.
+      void panel.offsetWidth;
+      if (canAnimatePanels()) panel.classList.add("tool-panel-anim-in");
+      pinContent();
+      return;
+    }
+
+    panel.hidden = true;
+    pinContent();
+  }
+
   // Open/close a group's body + chevron (safe on an in-progress group — the CSS
   // shows the chevron once `.expanded` is set even mid-run).
   function setGroupExpanded(el, open) {
     const body = el.querySelector(".tool-group-body");
     if (!body) return;
-    body.hidden = !open;
+    const collapsing = body.classList.contains("tool-panel-anim-out");
+    const wasOpen = el.classList.contains("expanded") && !collapsing;
     el.classList.toggle("expanded", open);
+    if (wasOpen === open && body.hidden === !open) return;
+    setPanelOpen(body, open);
   }
   function setDetailExpanded(row, open) {
-    const d = row.querySelector(".tool-item-details");
+    if (!row) return;
+    const d = row.querySelector ? row.querySelector(".tool-item-details") : null;
     if (!d) return;
-    d.hidden = !open;
+    const collapsing = d.classList.contains("tool-panel-anim-out");
+    const wasOpen = row.classList.contains("expanded") && !collapsing;
     row.classList.toggle("expanded", open);
+    if (wasOpen === open && d.hidden === !open) return;
+    setPanelOpen(d, open);
   }
 
-  // Re-apply the effective expand state to the WHOLE transcript. Called when the
-  // persisted setting changes (gear/config) and when the latch flips. Respects
-  // the latch via the effective helpers; touches the in-progress group too so a
-  // running batch opens/closes live (the reported gap).
+  // Re-apply Expand tool details after a gear/config flip. Finished content
+  // always collapses (accordion is live-only); in-progress groups get a single
+  // open slot when the setting is on, or shut when off.
   function applyExpandCommandOutputs() {
     for (const row of messagesEl.querySelectorAll(".has-details")) {
-      setDetailExpanded(row, detailShouldExpand());
+      const inLive =
+        !state.replaying &&
+        !!(row.closest && row.closest(".tool-group.in-progress"));
+      if (inLive) continue; // accordion pass below
+      if (!row._userToggled) setDetailExpanded(row, false);
     }
     for (const group of messagesEl.querySelectorAll(".tool-group")) {
-      setGroupExpanded(group, groupShouldExpand(group));
+      if (state.replaying || !group.classList.contains("in-progress")) {
+        if (!group._userToggled) setGroupExpanded(group, false);
+        continue;
+      }
+      setGroupExpanded(group, liveGroupShouldExpand(group));
+      if (!state.expandCommandOutputs) {
+        for (const row of group.querySelectorAll(".has-details")) {
+          if (!row._userToggled) setDetailExpanded(row, false);
+        }
+        continue;
+      }
+      const running = group.querySelectorAll(".tool-item.tool-running.has-details");
+      const all = group.querySelectorAll(".tool-item.has-details");
+      const target =
+        (running.length ? running[running.length - 1] : null) ||
+        (all.length ? all[all.length - 1] : null);
+      if (target) accordionLiveDetails(target);
     }
-  }
-
-  // Command Palette: Grok: Expand/Collapse All Tool Details (This Session). Sets
-  // the per-session latch, then re-applies it everywhere — so it (a) opens the
-  // batch that's still executing and (b) keeps applying to tool calls that
-  // arrive later this session, until you collapse-all or change the gear setting
-  // (last action wins). Broader than the setting: it opens EVERY group, incl.
-  // explore/edit-only ones.
-  function setAllToolDetails(open) {
-    state.toolExpandOverride = !!open;
-    applyExpandCommandOutputs();
   }
 
   function wireCommandToggle(rowEl, details, title) {
@@ -2412,8 +2607,10 @@
     rowEl.addEventListener("click", (e) => {
       if (e.target.closest("a, button")) return; // preview links keep their own click
       if (e.target.closest(".tool-item-details")) return; // selecting text inside must not collapse
-      details.hidden = !details.hidden;
-      rowEl.classList.toggle("expanded", !details.hidden); // › ↔ v
+      // User intent for THIS row — closeToolGroup's settle must not undo it.
+      rowEl._userToggled = true;
+      // Toggle via expanded class so a click mid-leave re-opens cleanly.
+      setDetailExpanded(rowEl, !rowEl.classList.contains("expanded"));
     });
   }
 
@@ -2428,7 +2625,10 @@
 
     const details = document.createElement("div");
     details.className = "tool-item-details";
-    details.hidden = !detailShouldExpand(); // latch, else grok.expandCommandOutputs, opens new rows pre-expanded
+    // Built hidden first so a live pre-open can take the enter animation path
+    // (setDetailExpanded → setPanelOpen) once the node is in the tree. Accordion
+    // opens it from addToToolGroup; finished content stays collapsed.
+    details.hidden = true;
     const block = document.createElement("div");
     block.className = "cmd-block";
     const inRow = document.createElement("div");
@@ -2442,10 +2642,31 @@
     cmd.textContent = command;
     inRow.appendChild(cmd);
     block.appendChild(inRow);
+    // Live-only OUT placeholder: "Running…" until commandOutput / tool result
+    // replaces it. Skipped on replay (history already has the finished shape).
+    if (!state.replaying) {
+      const runRow = document.createElement("div");
+      runRow.className = "cmd-io cmd-out cmd-running";
+      const runTag = document.createElement("span");
+      runTag.className = "cmd-io-tag";
+      runTag.textContent = "OUT";
+      runRow.appendChild(runTag);
+      const runBody = document.createElement("div");
+      runBody.className = "cmd-out-body";
+      const runMark = document.createElement("div");
+      runMark.className = "cmd-out-marker running";
+      runMark.innerHTML = `<span class="cmd-running-label">Running</span>${BLINK_DOTS}`;
+      runBody.appendChild(runMark);
+      runRow.appendChild(runBody);
+      block.appendChild(runRow);
+    }
     details.appendChild(block);
     item.appendChild(details);
 
     wireCommandToggle(item, details);
+    // Live open/collapse is owned by accordionLiveDetails (called from
+    // addToToolGroup after this row is the sole tool-running item). Leaving
+    // the panel hidden here keeps the enter animation on the accordion path.
     // toolCallId lets the completed tool_call_update attach output by id (the
     // cursor/Composer path); command lets the terminal commandOutput attach by
     // string (the grok-build path). Both reference the same `details` node.
@@ -2454,7 +2675,22 @@
 
   function attachCommandOutput(details, msg) {
     const block = details.querySelector(".cmd-block");
-    if (!block || block.querySelector(".cmd-out")) return; // idempotent (buffer replay)
+    if (!block) return;
+    // Drop the live "Running…" placeholder (if any) before attaching real OUT.
+    // Also treat an already-filled real OUT as idempotent (buffer replay).
+    const existingOut = block.querySelector(".cmd-out:not(.cmd-running)");
+    if (existingOut) return;
+    const running = block.querySelector(".cmd-running");
+    if (running) running.remove();
+    // Output means this command settled — clear Running on THIS row only
+    // (siblings that are still in flight keep their pill).
+    const pending = state.pendingCommandDetails.find((p) => p.details === details);
+    if (pending && pending.toolCallId) {
+      settleToolCall(pending.toolCallId);
+    } else {
+      const row = details.closest && details.closest(".tool-item, .tool-flat");
+      if (row) setToolRowRunning(row, false);
+    }
     const outRow = document.createElement("div");
     outRow.className = "cmd-io cmd-out";
     const tag = document.createElement("span");
@@ -2647,9 +2883,9 @@
   // count (so a collapsed group is still auditable) plus an expandable detail
   // holding the inline diff(s) + the native "open diff →" link. Rides the exact
   // same expand machinery as a command's IN/OUT block — the row becomes
-  // `has-details`, governed by grok.expandCommandOutputs / the Expand-All latch /
-  // a per-row click (wireCommandToggle). `diffs` is an ARRAY: a single tool call
-  // can carry more than one region.
+  // `has-details`, governed by the live accordion / a per-row click
+  // (wireCommandToggle). `diffs` is an ARRAY: a single tool call can carry more
+  // than one region.
   function attachDiffPreviewToToolItem(toolCallId, diffs) {
     const item = state.toolItemsByToolCallId.get(toolCallId);
     if (!item) return;
@@ -2708,7 +2944,9 @@
 
       details = document.createElement("div");
       details.className = "tool-item-details tool-item-diff";
-      details.hidden = !detailShouldExpand();
+      // Built hidden; live/standing pre-open goes through setDetailExpanded so
+      // the enter animation plays once the node is in the tree.
+      details.hidden = true;
     }
     while (details.firstChild) details.removeChild(details.firstChild);
     // One region + ONE "open diff →" per BLOCK (not per site) — the link's payload
@@ -2727,8 +2965,15 @@
     if (fresh) {
       item.appendChild(details);
       wireCommandToggle(item, details, "Show the diff");
+      // Live batch: route through the accordion so landing a diff on this row
+      // takes the single open slot (and collapses siblings). Finished / replay
+      // content stays collapsed until the user clicks.
+      const live =
+        !state.replaying &&
+        !!(item.closest && item.closest(".tool-group.in-progress"));
+      if (live) accordionLiveDetails(item);
     }
-    scrollToBottom();
+    pinContent();
   }
 
   // "+A −R" pill for an edit row (green additions, red removals). Uses a real
@@ -2892,6 +3137,7 @@
       applyToolFailure(item, message);
       const group = item.closest && item.closest(".tool-group");
       if (group) group.classList.add("has-error"); // collapsed group still signals the failure
+      settleToolCall(toolCallId); // failed ≡ done — drop Running on this row
       scrollToBottom();
     }
   }
@@ -3649,6 +3895,35 @@
   // scale and stays pinned above the input area at any font scale.
   function updateScrollBtn() {
     scrollBottomBtn.classList.toggle("visible", !state.stickToBottom);
+  }
+
+  // After layout-changing work (panel expand/collapse, new tool rows, diffs):
+  //   - pinned  → re-stick to the new bottom (tall expand used to leave the
+  //     view mid-panel while stickToBottom stayed true, so the scroll button
+  //     never appeared either)
+  //   - unpinned → re-measure; an expand that pushed the bottom further away
+  //     keeps the scroll button visible, a collapse that lands near the bottom
+  //     re-pins (same rule as the scroll listener). Auto-follow stays off after
+  //     the user scrolls up until they return to the bottom (#16 / #28).
+  // Double-rAF covers the enter animation's first painted frame, when
+  // scrollHeight often grows after the sync DOM write.
+  function pinContent() {
+    const apply = () => {
+      if (state.stickToBottom) {
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      } else {
+        state.stickToBottom = shouldStickToBottom(
+          messagesEl.scrollTop, messagesEl.scrollHeight, messagesEl.clientHeight);
+        if (state.stickToBottom) {
+          messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+      }
+      updateScrollBtn();
+    };
+    apply();
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(() => requestAnimationFrame(apply));
+    }
   }
 
   // Always pull the view to the bottom and re-pin. For interactive activity the
@@ -5134,6 +5409,7 @@
         // grok-build's terminal-fed rows. No-op (returns false) for grok-build,
         // whose row already has OUT.
         if (String(msg.call?.status).toLowerCase() === "completed" && maybeAttachToolResultOutput(msg.call)) {
+          settleToolCall(msg.call?.toolCallId);
           break;
         }
         // A failed tool (e.g. `image_to_video failed: image reference not readable`)
@@ -5144,6 +5420,12 @@
           break;
         }
         applyToolDiffs(msg.call);
+        // Any terminal status (completed / failed / cancelled) clears Running on
+        // THIS tool only — reads/searches never get commandOutput, so this is how
+        // their pill drops when the actual work finishes.
+        if (toolStatusIsTerminal(msg.call?.status)) {
+          settleToolCall(msg.call?.toolCallId);
+        }
         break;
       }
       case "subagentUpdate": {
@@ -5281,18 +5563,11 @@
         updateDonut(msg.used);
         break;
       case "expandCommandOutputs":
-        // Live toggle (grok.expandCommandOutputs): applies to existing rows
-        // too, and sets the default for rows still to come. Clears the
-        // per-session Expand/Collapse All latch — last action wins.
+        // Live toggle (grok.expandCommandOutputs): turns the live accordion
+        // on/off for the current in-progress batch and future ones.
         state.expandCommandOutputs = !!msg.value;
-        state.toolExpandOverride = null;
         applyExpandCommandOutputs();
         if (state.gearView === "config") renderConfigDebugPanel(); // keep the switch in sync
-        break;
-      case "setAllToolDetails":
-        // Command Palette: Grok: Expand/Collapse All Tool Details — one-shot,
-        // current session only, doesn't touch the persisted expandCommandOutputs.
-        setAllToolDetails(!!msg.open);
         break;
       case "commandOutput": {
         // A finished shell command's captured output (#41). grok-build delegates

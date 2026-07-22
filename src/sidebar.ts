@@ -2852,15 +2852,6 @@ See design doc for the full state machine diagram.`;
     this.post({ type: "fontScale", value: this.chatFontScale() });
   }
 
-  /** Command Palette: expand (open:true) / collapse (open:false) every tool group
-   *  and command IN/OUT box in the focused session. Per-session, in-memory: it's
-   *  `emit`ted (not `post`ed) so it lands in the session's replay buffer and a
-   *  warm re-focus re-applies the latch; a cold reopen (no buffer) falls back to
-   *  the persisted grok.expandCommandOutputs default. Never persisted to disk. */
-  setAllToolDetails(open: boolean): void {
-    this.emit(this.focused, { type: "setAllToolDetails", open });
-  }
-
   /** grok.showThinking (#26) — whether grok's reasoning traces are shown. Off by
    *  default; hidden traces are replaced by a lightweight "Thinking…" indicator. */
   private showThinking(): boolean {

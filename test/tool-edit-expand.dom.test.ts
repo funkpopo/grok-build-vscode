@@ -130,7 +130,7 @@ describe("single-edit tool group stays expandable + reviewable (#30, #45)", () =
     expect(item.querySelector(".diff-stat-del")!.textContent).toBe("−0");
   });
 
-  it("pre-expands the diff when grok.expandCommandOutputs (Expand tool details) is on", () => {
+  it("Expand tool details opens the diff live, then collapses on settle", () => {
     const { window, doc } = bootWebview();
     dispatch(window, {
       type: "initialState",
@@ -139,12 +139,15 @@ describe("single-edit tool group stays expandable + reviewable (#30, #45)", () =
     });
     dispatch(window, { type: "toolCall", call: EDIT_CALL });
     dispatch(window, { type: "toolCallUpdate", call: { toolCallId: "tc1", content: [DIFF] } });
-    dispatch(window, { type: "promptComplete", meta: {} });
-
+    // Live accordion opens body + diff while the batch is in progress.
     const group = doc.querySelector(".tool-group") as HTMLElement;
-    // The edit group is has-details, so the setting auto-opens the group AND the diff.
     expect((group.querySelector(".tool-group-body") as HTMLElement).hidden).toBe(false);
     expect((group.querySelector(".tool-item-details") as HTMLElement).hidden).toBe(false);
+
+    dispatch(window, { type: "promptComplete", meta: {} });
+    // Accordion ends with the batch.
+    expect((group.querySelector(".tool-group-body") as HTMLElement).hidden).toBe(true);
+    expect((group.querySelector(".tool-item-details") as HTMLElement).hidden).toBe(true);
   });
 
   it("still flattens a lone non-edit (a read) into a `.tool-flat`", () => {
@@ -246,14 +249,49 @@ describe("edit totals paint mid-turn, before the batch closes (#45 follow-up)", 
     expect(label().querySelectorAll(".diff-stat")).toHaveLength(1);
   });
 
-  it("a running batch with a landed edit diff stays COLLAPSED (only the setting/latch expand it)", () => {
+  it("a running batch with a landed edit diff auto-opens when Expand tool details is on", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "initialState",
+      effort: "", cwd: "/w", useCtrlEnter: false, extVersion: "0",
+      showThinking: false, expandCommandOutputs: true,
+    });
+    edit(window, "e1", "alpha.txt", "W1", "G1");
+    // Totals on the header AND the body/diff open while the batch is live.
+    expect(doc.querySelector(".tool-group-label")!.querySelector(".diff-stat")).not.toBeNull();
+    expect((doc.querySelector(".tool-group-body") as HTMLElement).hidden).toBe(false);
+    expect((doc.querySelector(".tool-item-details") as HTMLElement).hidden).toBe(false);
+    expect(doc.querySelector(".tool-group")!.classList.contains("expanded")).toBe(true);
+    // Accordion ends when the batch settles.
+    dispatch(window, { type: "promptComplete", meta: {} });
+    expect((doc.querySelector(".tool-group-body") as HTMLElement).hidden).toBe(true);
+  });
+
+  it("parallel edit diffs accordion to a single open slot (not every running edit)", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "initialState",
+      effort: "", cwd: "/w", useCtrlEnter: false, extVersion: "0",
+      showThinking: false, expandCommandOutputs: true,
+    });
+    edit(window, "e1", "a.txt", "A0", "A1");
+    edit(window, "e2", "b.txt", "B0", "B1");
+    edit(window, "e3", "c.txt", "C0", "C1");
+    const details = [...doc.querySelectorAll(".tool-item-details")] as HTMLElement[];
+    expect(details).toHaveLength(3);
+    // Newest landed edit holds the open slot; earlier ones collapse.
+    expect(details.map((d) => d.hidden)).toEqual([true, true, false]);
+  });
+
+  it("a running batch stays collapsed when Expand tool details is off", () => {
     const { window, doc } = bootWebview();
     edit(window, "e1", "alpha.txt", "W1", "G1");
-    // Totals are visible on the header, but nothing auto-opened.
+    // Totals still paint on the collapsed header; body/diff stay shut.
     expect(doc.querySelector(".tool-group-label")!.querySelector(".diff-stat")).not.toBeNull();
     expect((doc.querySelector(".tool-group-body") as HTMLElement).hidden).toBe(true);
     expect((doc.querySelector(".tool-item-details") as HTMLElement).hidden).toBe(true);
-    expect(doc.querySelector(".tool-group")!.classList.contains("expanded")).toBe(false);
+    dispatch(window, { type: "promptComplete", meta: {} });
+    expect((doc.querySelector(".tool-group-body") as HTMLElement).hidden).toBe(true);
   });
 });
 
@@ -291,25 +329,37 @@ describe("the authoritative completed diff corrects the optimistic echo (#45 fol
 
   it("the corrected row keeps ONE working toggle (no listener bound to a stale node)", () => {
     const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "initialState",
+      effort: "", cwd: "/w", useCtrlEnter: false, extVersion: "0",
+      showThinking: false, expandCommandOutputs: true,
+    });
     dispatch(window, { type: "toolCall", call: { toolCallId: "w1", kind: "edit", title: "Write config.json", rawInput: { file_path: "config.json" } } });
     dispatch(window, { type: "toolCallUpdate", call: { toolCallId: "w1", content: [{ type: "diff", path: "config.json", oldText: "", newText: NEW }] } });
     dispatch(window, { type: "toolCallUpdate", call: { toolCallId: "w1", status: "completed", content: [{ type: "diff", path: "config.json", oldText: OLD, newText: NEW }] } });
 
     const item = doc.querySelector(".tool-item") as HTMLElement;
     const details = () => doc.querySelector(".tool-item-details") as HTMLElement;
-    expect(details().hidden).toBe(true);
-    click(window, item); // one click → open (a double-bound listener would toggle twice = no-op)
+    // Expand tool details pre-opens the diff; one click collapses (a double-bound
+    // listener would toggle twice = stay open).
     expect(details().hidden).toBe(false);
     click(window, item);
     expect(details().hidden).toBe(true);
+    click(window, item);
+    expect(details().hidden).toBe(false);
   });
 
   it("an identical repaint is still a no-op (buffer replay stays idempotent)", () => {
     const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "initialState",
+      effort: "", cwd: "/w", useCtrlEnter: false, extVersion: "0",
+      showThinking: false, expandCommandOutputs: true,
+    });
     dispatch(window, { type: "toolCall", call: EDIT_CALL });
     dispatch(window, { type: "toolCallUpdate", call: { toolCallId: "tc1", content: [DIFF] } });
     const item = doc.querySelector(".tool-item")!;
-    click(window, item); // user opens the diff
+    // Setting on → live accordion already open; repaint must not replace the node.
     expect((doc.querySelector(".tool-item-details") as HTMLElement).hidden).toBe(false);
 
     dispatch(window, { type: "toolCallUpdate", call: { toolCallId: "tc1", content: [DIFF] } }); // replay
@@ -325,22 +375,33 @@ describe("the authoritative completed diff corrects the optimistic echo (#45 fol
 // (`old_line`/`new_line`, 1-based). We used to drop `_meta` entirely and restart the
 // gutter at 1 for every edit, so a one-line replace at line 147 rendered as "1".
 // Wire shape (grok 0.2.101): {type:"diff", path, oldText, newText, _meta:{old_line, new_line}}
-// Expanding a RUNNING tool group to watch it must survive the batch finishing.
-// closeToolGroup settles every group to its default expand state, which silently
-// threw away a mid-execution manual expand (shipped since #41; only reachable now
-// that totals/diffs paint during the turn and give a reason to expand early).
-describe("a manual expand of a running tool group survives the batch closing", () => {
-  const startBatch = () => {
+// Expand tool details gates the live accordion; closeToolGroup collapses
+// auto-opened panels. A mid-run *manual* toggle is sticky: closeToolGroup must
+// not undo user intent (e.g. the user collapsed a noisy batch and expects it
+// to stay closed).
+describe("a manual toggle of a running tool group survives the batch closing", () => {
+  const startBatch = (expandOn = true) => {
     const h = bootWebview();
+    if (expandOn) {
+      dispatch(h.window, {
+        type: "initialState",
+        effort: "", cwd: "/w", useCtrlEnter: false, extVersion: "0",
+        showThinking: false, expandCommandOutputs: true,
+      });
+    }
     dispatch(h.window, { type: "toolCall", call: EDIT_CALL });
     dispatch(h.window, { type: "toolCallUpdate", call: { toolCallId: "tc1", content: [DIFF] } });
     return h;
   };
   const groupBody = (doc: Document) => doc.querySelector(".tool-group-body") as HTMLElement;
 
-  it("stays expanded when the user opened it mid-execution", () => {
-    const { window, doc } = startBatch();
-    click(window, doc.querySelector(".tool-group-header")!); // user expands mid-run
+  it("stays expanded when the user re-opened it after collapsing mid-execution", () => {
+    const { window, doc } = startBatch(true);
+    // Setting on → live open; collapse then re-open so the user has stated intent.
+    const hdr = doc.querySelector(".tool-group-header")!;
+    expect(groupBody(doc).hidden).toBe(false);
+    click(window, hdr); // collapse
+    click(window, hdr); // re-open → _userToggled
     expect(groupBody(doc).hidden).toBe(false);
 
     dispatch(window, { type: "promptComplete", meta: {} }); // batch closes
@@ -349,39 +410,28 @@ describe("a manual expand of a running tool group survives the batch closing", (
   });
 
   it("stays collapsed when the user closed it mid-execution, even with the setting on", () => {
-    const { window, doc } = bootWebview();
-    dispatch(window, {
-      type: "initialState",
-      effort: "", cwd: "/w", useCtrlEnter: false, extVersion: "0",
-      showThinking: false, expandCommandOutputs: true, // would auto-open this group at close
-    });
-    dispatch(window, { type: "toolCall", call: EDIT_CALL });
-    dispatch(window, { type: "toolCallUpdate", call: { toolCallId: "tc1", content: [DIFF] } });
-    // A running group is collapsed even with the setting on (it only auto-opens at
-    // close), so reaching "the user deliberately closed it" takes open-then-close.
+    const { window, doc } = startBatch(true);
+    // Live accordion starts open; one click is a deliberate collapse.
     const hdr = doc.querySelector(".tool-group-header")!;
-    click(window, hdr); // open
     expect(groupBody(doc).hidden).toBe(false);
-    click(window, hdr); // and deliberately close again
+    click(window, hdr); // deliberately close
     expect(groupBody(doc).hidden).toBe(true);
 
     dispatch(window, { type: "promptComplete", meta: {} });
-    expect(groupBody(doc).hidden).toBe(true); // user intent beats the setting's auto-open
+    expect(groupBody(doc).hidden).toBe(true); // user intent beats auto-settle
   });
 
-  it("still settles to the default when the user never touched it", () => {
-    const { window, doc } = startBatch();
+  it("collapses after settle when Expand tool details is on and the user never touched it", () => {
+    const { window, doc } = startBatch(true);
+    expect(groupBody(doc).hidden).toBe(false); // open while running
     dispatch(window, { type: "promptComplete", meta: {} });
-    expect(groupBody(doc).hidden).toBe(true); // unchanged default behavior
+    expect(groupBody(doc).hidden).toBe(true); // accordion ends with the batch
   });
 
-  it("an explicit Collapse All still overrides a manual expand", () => {
-    const { window, doc } = startBatch();
-    click(window, doc.querySelector(".tool-group-header")!);
+  it("stays collapsed when Expand tool details is off and the user never touched it", () => {
+    const { window, doc } = startBatch(false);
+    expect(groupBody(doc).hidden).toBe(true); // no live accordion
     dispatch(window, { type: "promptComplete", meta: {} });
-    expect(groupBody(doc).hidden).toBe(false);
-
-    dispatch(window, { type: "setAllToolDetails", expand: false }); // the latch wins
     expect(groupBody(doc).hidden).toBe(true);
   });
 });

@@ -1,7 +1,10 @@
 :root {
   --pad: 8px;
-  --gap: 6px;
+  --gap: 5px;
   --radius: 6px;
+  /* Shared expand/collapse panel motion (tool groups, command IN/OUT, diffs). */
+  --tool-panel-dur: 0.18s;
+  --tool-panel-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   /* Codex-style chat surfaces. The user bubble is a foreground-relative tint,
      NOT a semantic surface token: themes (Cursor dark) can map
      editorWidget.background to the exact sideBar.background, making a
@@ -207,7 +210,7 @@ a:hover {
   padding: var(--pad);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 4px; /* dense live tool stream — agent prose still breathes via its own margins */
 }
 
 .welcome {
@@ -453,8 +456,9 @@ body.turn-busy .queued-steer:hover {
 }
 .msg.agent {
   background: transparent;
-  padding-left: 0;
-  padding-right: 0;
+  /* Dense with the tool stream: horizontal flush, tight vertical so narration
+     sits close to the tool group it introduces (was 8px from .msg). */
+  padding: 2px 0;
 }
 
 .msg-actions {
@@ -467,6 +471,10 @@ body.turn-busy .queued-steer:hover {
   opacity: 0;
   transition: opacity 0.12s;
 }
+/* Author display:flex would otherwise beat the UA [hidden] rule (same trap
+   as .welcome / .toolbar-popover). During a live turn the agent footer is
+   hidden so it doesn't reserve a ~28px ghost gap above the next tool row. */
+.msg-actions[hidden] { display: none; }
 .msg.user .msg-actions {
   justify-content: flex-end;
   padding: 0 10px;
@@ -562,10 +570,10 @@ body.thinking-hidden .msg.thinking { display: none; }
 .grokking {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   color: var(--vscode-descriptionForeground);
   font-size: var(--vscode-font-size);
-  padding: 3px 0;
+  padding: 2px 0;
   user-select: none;
 }
 .thinking-indicator-icon,
@@ -664,14 +672,50 @@ body.thinking-hidden .msg.thinking { display: none; }
 .tool-flat {
   display: flex;
   flex-wrap: wrap; /* the #41 details block breaks onto its own full-width row */
-  align-items: flex-start;
-  gap: 7px;
+  align-items: center;
+  gap: 4px;
   font-size: var(--vscode-font-size);
+  line-height: 1.25;
   color: var(--vscode-descriptionForeground);
-  padding: 3px 0;
+  padding: 0;
   font-family: var(--vscode-font-family);
 }
 .tool-flat.has-details { cursor: pointer; }
+
+/* Expand / collapse panel motion — applied by setPanelOpen (via setGroupExpanded /
+   setDetailExpanded). Enter slides + fades in; leave fades + slides up, and
+   `hidden` is deferred until animationend so the leave frame is actually visible
+   (tests without Web Animations hide instantly via canAnimatePanels). */
+.tool-panel-anim-in {
+  animation: tool-panel-in var(--tool-panel-dur) var(--tool-panel-ease) both;
+}
+.tool-panel-anim-out {
+  animation: tool-panel-out 0.14s ease-in both;
+}
+@keyframes tool-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes tool-panel-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tool-panel-anim-in,
+  .tool-panel-anim-out { animation: none; }
+}
 
 /* Generated media (grok /imagine image, /imagine-video video) */
 .generated-image {
@@ -794,25 +838,37 @@ body.thinking-hidden .msg.thinking { display: none; }
 }
 .tool-group-header {
   display: flex;
-  align-items: flex-start;
-  gap: 7px;
+  align-items: center;
+  gap: 5px;
   cursor: pointer;
   color: var(--vscode-descriptionForeground);
-  padding: 3px 0;
+  padding: 0;
+  line-height: 1.25;
   font-family: var(--vscode-font-family);
   user-select: none;
 }
 .tool-group-header:hover { color: var(--vscode-foreground); }
 /* Category icon — size + color (currentColor) set here, overriding the SVG's own attrs. */
-.tool-icon { width: 16px; height: 16px; flex: 0 0 auto; margin-top: 1px; opacity: 0.85; }
+.tool-icon { width: 16px; height: 16px; flex: 0 0 auto; opacity: 0.85; }
 .tool-group-header:hover .tool-icon { opacity: 1; }
+/* Live batch: soft pulse on the category icon so "working" is visible even when
+   the user is skimming only the header row. */
+.tool-group.in-progress > .tool-group-header .tool-icon {
+  opacity: 1;
+  animation: tool-icon-pulse 1.6s ease-in-out infinite;
+}
+@keyframes tool-icon-pulse {
+  0%, 100% { opacity: 0.7; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.06); }
+}
 .tool-chevron {
   display: inline-flex;
   align-items: center;
   align-self: center;
   opacity: 0.45;
   margin-left: 4px;
-  transition: opacity 0.12s, transform 0.12s;
+  transition: opacity var(--tool-panel-dur) var(--tool-panel-ease),
+              transform var(--tool-panel-dur) var(--tool-panel-ease);
 }
 .tool-group-header:hover .tool-chevron { opacity: 0.8; }
 /* Header-scoped (> .tool-group-header) on purpose: the body's command ROWS
@@ -823,14 +879,29 @@ body.thinking-hidden .msg.thinking { display: none; }
   opacity: 0.8;
   transform: rotate(90deg);
 }
-.tool-group.in-progress > .tool-group-header .tool-chevron { display: none; } /* can't expand while running */
-/* …except a lone running COMMAND, which is expandable immediately (#41), or a
-   group the Expand-All latch forced open mid-run (so it can be collapsed). */
-.tool-group.in-progress.cmd-single > .tool-group-header .tool-chevron,
-.tool-group.in-progress.expanded > .tool-group-header .tool-chevron { display: inline-flex; }
+/* Live batches auto-expand by default, so the chevron is available mid-run
+   (collapse to peek less). Still hidden only when the group is collapsed and
+   not cmd-single — matches the old cmd-single exception for lone commands. */
+.tool-group.in-progress:not(.expanded):not(.cmd-single) > .tool-group-header .tool-chevron {
+  display: none;
+}
 /* A running group stays muted like the Grokking / Thinking indicators — the
    blinking dots convey activity, not a brighter text color. */
 .tool-group-label { color: inherit; }
+/* Live header label: same shimmer band as Grokking / Thinking so a running
+   batch reads as "in progress" even before the body is scanned. */
+.tool-group.in-progress .tool-live-label {
+  background: linear-gradient(90deg,
+    var(--vscode-descriptionForeground) 30%,
+    var(--vscode-foreground) 50%,
+    var(--vscode-descriptionForeground) 70%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: waiting-shimmer 2.2s linear infinite;
+}
 .tool-dots { display: none; }
 .tool-group.in-progress .tool-dots {
   display: inline-flex;
@@ -848,20 +919,72 @@ body.thinking-hidden .msg.thinking { display: none; }
   40% { opacity: 1; }
 }
 .tool-group-body {
-  margin-top: 2px;
-  padding-left: 15px;
+  margin-top: 0;
+  padding-left: 12px;
   border-left: 1px solid var(--vscode-panel-border);
   margin-left: 7px;
+  /* Left border soft-pulses while the batch runs — a second live cue that
+     doesn't depend on reading the header label. */
+  transition: border-color 0.2s ease;
+}
+.tool-group.in-progress > .tool-group-body {
+  border-left-color: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 55%, var(--vscode-panel-border));
+  animation: tool-rail-pulse 1.8s ease-in-out infinite;
+}
+@keyframes tool-rail-pulse {
+  0%, 100% { border-left-color: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 35%, var(--vscode-panel-border)); }
+  50% { border-left-color: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 75%, var(--vscode-panel-border)); }
 }
 .tool-item {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px;
-  padding: 3px 0;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  min-height: 1.25em;
+  line-height: 1.25;
   font-family: var(--vscode-font-family);
   font-size: var(--vscode-font-size);
   color: var(--vscode-descriptionForeground);
+  transition: color 0.15s ease, background-color 0.15s ease;
+  border-radius: 3px;
+}
+/* Active row in a live batch: slightly brighter + a quiet tint so the
+   currently-executing tool is obvious among siblings. */
+.tool-item.tool-running {
+  color: var(--vscode-foreground);
+  background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 8%, transparent);
+  padding-left: 3px;
+  margin-left: -3px;
+  padding-right: 3px;
+}
+.tool-run-pill {
+  flex: 0 0 auto;
+  font-size: 9px;
+  line-height: 1.1;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--vscode-charts-blue, #3794ff);
+  background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 14%, transparent);
+  border-radius: 3px;
+  padding: 0 4px;
+  user-select: none;
+  animation: tool-pill-fade 1.4s ease-in-out infinite;
+}
+@keyframes tool-pill-fade {
+  0%, 100% { opacity: 0.65; }
+  50% { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tool-group.in-progress > .tool-group-header .tool-icon,
+  .tool-group.in-progress > .tool-group-body,
+  .tool-group.in-progress .tool-live-label,
+  .tool-run-pill { animation: none; }
+  .tool-group.in-progress .tool-live-label {
+    background: none;
+    color: inherit;
+    -webkit-text-fill-color: currentColor;
+  }
 }
 /* #41: per-command expandable detail — Claude-Code-style IN/OUT block on the
    shared code-chip surface. Every tool call stays one ellipsized line;
@@ -874,6 +997,8 @@ body.thinking-hidden .msg.thinking { display: none; }
 .tool-item.expanded .tool-chevron, .tool-flat.expanded .tool-chevron {
   opacity: 0.8;
   transform: rotate(90deg);
+  transition: opacity var(--tool-panel-dur) var(--tool-panel-ease),
+              transform var(--tool-panel-dur) var(--tool-panel-ease);
 }
 /* Single-line labels: truncate instead of wrapping (long grep patterns,
    commands); the details block still breaks onto its own full-width row. */
@@ -887,26 +1012,26 @@ body.thinking-hidden .msg.thinking { display: none; }
 .tool-item-details {
   flex-basis: 100%;
   min-width: 0;
-  margin: 3px 0 6px;
+  margin: 1px 0 2px;
   cursor: default;      /* the block is content, not a toggle target */
   user-select: text;    /* output must be selectable without collapsing */
 }
 .cmd-block {
   background: var(--chat-surface-code);
   border-radius: var(--chat-radius-code, 10px);
-  padding: 6px 10px;
+  padding: 4px 8px;
   font-size: 0.92em;
-  line-height: 1.45;
+  line-height: 1.35;
 }
 .cmd-io {
   display: grid;
-  grid-template-columns: 30px 1fr;
-  gap: 0 8px;
+  grid-template-columns: 28px 1fr;
+  gap: 0 6px;
 }
 .cmd-io + .cmd-io {
   border-top: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
-  margin-top: 6px;
-  padding-top: 6px;
+  margin-top: 4px;
+  padding-top: 4px;
 }
 .cmd-io-tag {
   color: var(--vscode-descriptionForeground);
@@ -945,6 +1070,16 @@ body.thinking-hidden .msg.thinking { display: none; }
    text) instead of an empty "(no output)" pre. */
 .cmd-out-marker.ok { color: var(--vscode-descriptionForeground); }
 .cmd-out-marker.ok::first-letter { color: var(--vscode-charts-green, #4ec9b0); }
+/* Live command OUT placeholder — sits under IN until real output lands. */
+.cmd-out-marker.running {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--vscode-charts-blue, #3794ff);
+  margin-bottom: 0;
+}
+.cmd-running-label { font-weight: 500; }
+.cmd-running .cmd-io-tag { color: var(--vscode-charts-blue, #3794ff); opacity: 0.85; }
 .cmd-out.failed .cmd-io-tag,
 .cmd-out.failed .tool-cmd-output { color: var(--vscode-errorForeground); }
 

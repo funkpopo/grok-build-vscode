@@ -21,7 +21,7 @@
     "messageChunk", "media", "userMessageChunk", "historyReplay", "permissionHistoryQueue",
     "planHistoryQueue", "planProcessing", "toolCall", "toolCallUpdate", "permissionRequest",
     "permissionResolved", "exitPlanRequest", "planResolved", "questionRequest", "planNotice", "autoCompactNotice", "planBlocked",
-    "promptComplete", "contextUsage", "commandOutput", "expandCommandOutputs", "setAllToolDetails", "focusInput", "agentReset", "agentError", "agentEnd", "exit", "setBusy", "summarizing",
+    "promptComplete", "contextUsage", "commandOutput", "expandCommandOutputs", "focusInput", "agentReset", "agentError", "agentEnd", "exit", "setBusy", "summarizing",
     "sessionContext", "clearMessages", "onboarding", "error", "xaiNotification", "subagentUpdate", "sessions",
     "sessionDot", "queuedSends", "steerUnavailable", "usage", "steerByDefault",
   ];

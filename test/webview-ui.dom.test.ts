@@ -1696,6 +1696,41 @@ describe("agent message footer (copy + timestamp) — one per turn", () => {
 
     expect(doc.querySelectorAll(".msg.agent .msg-actions")).toHaveLength(2);
   });
+
+  it("mid-turn agent footer is display:none so it can't leave a ghost gap above tools", () => {
+    // Regression: .msg-actions { display:flex } used to beat the UA [hidden]
+    // rule, so the hidden footer still reserved ~28px between narration and the
+    // next tool group. Companion CSS (.msg-actions[hidden]{display:none}) fixes
+    // it — same pattern as .welcome / .toolbar-popover.
+    const { window, doc } = bootWebview();
+    const style = doc.createElement("style");
+    style.textContent = `
+      .msg-actions { display: flex; }
+      .msg-actions[hidden] { display: none; }
+    `;
+    doc.head.appendChild(style);
+
+    dispatch(window, { type: "userMessage", text: "look around" });
+    dispatch(window, { type: "agentStart" });
+    dispatch(window, { type: "messageChunk", text: "Reviewing the diffs" });
+    dispatch(window, { type: "toolCall", call: {
+      toolCallId: "t1", kind: "execute", title: "Run git",
+      rawInput: { command: "git diff" },
+    } });
+
+    const footer = doc.querySelector(".msg.agent .msg-actions") as HTMLElement;
+    expect(footer).toBeTruthy();
+    expect(footer.hidden).toBe(true);
+    expect(window.getComputedStyle(footer).display).toBe("none");
+
+    // DOM order: agent segment, then the live tool group (no intervening spacer).
+    const messages = doc.getElementById("messages")!;
+    const kids = [...messages.children].filter((el) => el.id !== "welcome");
+    const agentIdx = kids.findIndex((el) => el.classList.contains("msg") && el.classList.contains("agent"));
+    const toolIdx = kids.findIndex((el) => el.classList.contains("tool-group"));
+    expect(agentIdx).toBeGreaterThanOrEqual(0);
+    expect(toolIdx).toBe(agentIdx + 1);
+  });
 });
 
 describe("composer autosize", () => {
