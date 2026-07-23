@@ -4,6 +4,20 @@ export interface SlashCmd {
 }
 
 /**
+ * Slash commands the extension owns (not advertised by the CLI over ACP).
+ * Injected at the same ingestion point as `filterAdvertisedCommands` so they
+ * appear in autocomplete and the dispatch name list. `/btw` (P3-16) is an
+ * unadvertised `_x.ai/btw` RPC — without this entry, typing `/btw` shows no
+ * popover hint even though send works.
+ */
+export const EXTENSION_SLASH_COMMANDS: readonly SlashCmd[] = [
+  {
+    name: "btw",
+    description: "Side question — does not interrupt the main turn",
+  },
+];
+
+/**
  * Slash commands the extension hides from both the autocomplete list and the
  * dispatch gate. `/always-approve` (#31) only mutates grok's *global*
  * config.toml — a surprising, sticky side effect that then silences permission
@@ -43,6 +57,24 @@ export function filterAdvertisedCommands<T extends { name: string }>(
     if (opts?.videoGen === false && VIDEO_GEN_SLASH_COMMANDS.has(c.name)) return false;
     return true;
   });
+}
+
+/**
+ * Merge extension-owned slash commands into the filtered advertised list.
+ * Idempotent: if the CLI already advertises a name (future builds), keep the
+ * CLI entry. New entries are inserted in name order so `/` popover stay sorted.
+ */
+export function withExtensionSlashCommands<T extends { name: string; description?: string }>(
+  commands: T[],
+): Array<T | SlashCmd> {
+  const out: Array<T | SlashCmd> = commands.slice();
+  for (const extra of EXTENSION_SLASH_COMMANDS) {
+    if (out.some((c) => c.name === extra.name)) continue;
+    const i = out.findIndex((c) => c.name.localeCompare(extra.name) > 0);
+    if (i === -1) out.push(extra);
+    else out.splice(i, 0, extra);
+  }
+  return out;
 }
 
 /** True when a leading slash command is a media-gen tool that's currently disabled. */

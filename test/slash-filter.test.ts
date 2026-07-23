@@ -1,12 +1,14 @@
 import { describe, it, expect } from "vitest";
 import {
   applySlashPick,
+  EXTENSION_SLASH_COMMANDS,
   filterAdvertisedCommands,
   filterCommands,
   getSlashQuery,
   HIDDEN_SLASH_COMMANDS,
   isDisabledMediaSlash,
   matchSlashCommand,
+  withExtensionSlashCommands,
 } from "../src/slash-filter";
 
 describe("getSlashQuery", () => {
@@ -126,6 +128,42 @@ describe("filterAdvertisedCommands", () => {
     expect(
       filterAdvertisedCommands(cmds, { imageGen: true, videoGen: false }).map((c) => c.name),
     ).toEqual(["compact", "imagine", "imagine-edit", "session-info"]);
+  });
+});
+
+describe("withExtensionSlashCommands", () => {
+  it("injects /btw when the CLI does not advertise it (P3-16 autocomplete)", () => {
+    const cmds = [
+      { name: "compact", description: "Compress" },
+      { name: "session-info", description: "Info" },
+    ];
+    const merged = withExtensionSlashCommands(cmds);
+    expect(merged.map((c) => c.name)).toEqual(["btw", "compact", "session-info"]);
+    const btw = merged.find((c) => c.name === "btw");
+    expect(btw?.description).toMatch(/side question/i);
+  });
+
+  it("is idempotent when the CLI already advertises btw", () => {
+    const cmds = [
+      { name: "btw", description: "CLI copy" },
+      { name: "compact" },
+    ];
+    const merged = withExtensionSlashCommands(cmds);
+    expect(merged.filter((c) => c.name === "btw")).toHaveLength(1);
+    expect(merged.find((c) => c.name === "btw")?.description).toBe("CLI copy");
+  });
+
+  it("EXTENSION_SLASH_COMMANDS includes btw", () => {
+    expect(EXTENSION_SLASH_COMMANDS.some((c) => c.name === "btw")).toBe(true);
+  });
+
+  it("prefix filter surfaces btw for /bt and /btw", () => {
+    const cmds = withExtensionSlashCommands([
+      { name: "compact" },
+      { name: "session-info" },
+    ]);
+    expect(filterCommands(cmds, "bt").map((c) => c.name)).toEqual(["btw"]);
+    expect(filterCommands(cmds, "btw").map((c) => c.name)).toEqual(["btw"]);
   });
 });
 

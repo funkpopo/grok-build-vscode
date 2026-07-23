@@ -30,7 +30,11 @@ import {
   shouldBlockWrite,
 } from "./plan-gate";
 import { resolveGrokHome } from "./sessions";
-import { filterAdvertisedCommands, type FilterAdvertisedOptions } from "./slash-filter";
+import {
+  filterAdvertisedCommands,
+  withExtensionSlashCommands,
+  type FilterAdvertisedOptions,
+} from "./slash-filter";
 import {
   parseWorktreeApply,
   parseWorktreeCreate,
@@ -891,7 +895,10 @@ export class AcpClient extends EventEmitter {
     if (r.event === "commandsUpdate") {
       // Hide config-mutating no-op commands (`/always-approve`) from both the
       // autocomplete and the dispatch gate at the single ingestion point (#31).
-      this.availableCommands = filterAdvertisedCommands(r.commands, this.opts.mediaFilter);
+      // Then inject extension-owned entries (`/btw`) the CLI never advertises.
+      this.availableCommands = withExtensionSlashCommands(
+        filterAdvertisedCommands(r.commands, this.opts.mediaFilter),
+      );
       this.emit("commandsUpdate", this.availableCommands);
       return;
     }

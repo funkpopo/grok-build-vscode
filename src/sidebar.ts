@@ -985,12 +985,15 @@ See design doc for the full state machine diagram.`;
    */
   private async btwSend(text: string): Promise<void> {
     const session = this.focused;
+    // Strict gate: only a leading `/btw …` is a side question. Never treat bare
+    // prose (or a btwSend message without the slash) as an aside — that path
+    // must stay opt-in so normal send/queue/steer stay the default.
     const parsed = parseBtwSlash(text ?? "");
-    const question = parsed ? parsed.question : (text ?? "").trim();
-    if (!question) {
+    if (!parsed || !parsed.question) {
       this.emit(session, { type: "error", text: BTW_USAGE });
       return;
     }
+    const question = parsed.question;
     const client = session.client ?? (session === this.focused ? await this.ensureClient() : undefined);
     if (!client || !session.activeSessionId) {
       this.emit(session, {

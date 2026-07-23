@@ -41,10 +41,12 @@ Probed with a live "count 1..40" turn: `_x.ai/btw` accepted mid-stream, returned
 ## Extension behavior
 
 - Composer `/btw <question>` (idle **or** busy) → host `btwSend` → `_x.ai/btw`
+- **Strict prefix:** only a leading `/btw …` runs the aside. Bare prose never becomes a side question (host `btwSend` rejects non-matches with the usage hint)
 - Does **not** set main-turn busy, does **not** queue or steer
 - Renders a dedicated aside card (question + answer / pending / error)
 - `-32601` → clear "needs newer CLI" error on the card
 - Empty `/btw` → usage hint, no RPC
+- Autocomplete: CLI does **not** advertise `btw` over ACP; the extension injects it via `withExtensionSlashCommands` (`src/slash-filter.ts`) so `/` / `/bt` shows **Side question — does not interrupt the main turn**
 
 ## Probe
 
