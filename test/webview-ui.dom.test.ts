@@ -515,10 +515,8 @@ describe("gear settings lock (model + effort disabled while busy / priming)", ()
 
   it("effort levels show a short visible caption + a full tooltip (not bare dots)", () => {
     // Webview native title tooltips are delayed/unreliable; the caption under
-    // each dot is the primary affordance (off/min/low/med/high/…).
+    // each dot is the primary affordance (low/med/high). Empty selection = default.
     const { window, doc } = bootWithModels();
-    // Catalog may list only low/medium/high (grok-4.5); the picker still shows
-    // the full wire ladder so xhigh/max/none/minimal stay reachable.
     dispatch(window, {
       type: "session",
       sessionId: "s1",
@@ -531,7 +529,7 @@ describe("gear settings lock (model + effort disabled while busy / priming)", ()
     });
     click(window, $(doc, "gear-btn"));
     const labels = [...doc.querySelectorAll(".effort-dot .effort-label")].map((el) => el.textContent);
-    expect(labels).toEqual(["off", "min", "low", "med", "high", "xhi", "max"]);
+    expect(labels).toEqual(["low", "med", "high"]);
     const lowDot = [...doc.querySelectorAll(".effort-dot")].find(
       (el) => (el as HTMLElement).querySelector(".effort-label")?.textContent === "low",
     ) as HTMLElement;

@@ -34,10 +34,9 @@ describe("AcpClient.request timer lifecycle", () => {
   });
 });
 
-// Reasoning effort is an agent-level flag and must precede `stdio`. As of
-// 0.2.109 the set includes `max` when the model menu advertises it; the picker
-// only offers advertised levels, so buildGrokAgentArgs forwards whatever the
-// user picked (incl. max).
+// Reasoning effort is an agent-level flag and must precede `stdio`. The UI
+// only offers low|medium|high (+ empty default); the helper still forwards any
+// string so a legacy settings value does not crash spawn.
 describe("buildGrokAgentArgs", () => {
   it("starts ACP sessions with the stdio subcommand when no effort is set", () => {
     expect(buildGrokAgentArgs()).toEqual(["agent", "stdio"]);
@@ -45,8 +44,7 @@ describe("buildGrokAgentArgs", () => {
 
   it("forwards a valid effort as --reasoning-effort before the stdio subcommand", () => {
     expect(buildGrokAgentArgs("high")).toEqual(["agent", "--reasoning-effort", "high", "stdio"]);
-    expect(buildGrokAgentArgs("none")).toEqual(["agent", "--reasoning-effort", "none", "stdio"]);
-    expect(buildGrokAgentArgs("xhigh")).toEqual(["agent", "--reasoning-effort", "xhigh", "stdio"]);
-    expect(buildGrokAgentArgs("max")).toEqual(["agent", "--reasoning-effort", "max", "stdio"]);
+    expect(buildGrokAgentArgs("low")).toEqual(["agent", "--reasoning-effort", "low", "stdio"]);
+    expect(buildGrokAgentArgs("medium")).toEqual(["agent", "--reasoning-effort", "medium", "stdio"]);
   });
 });

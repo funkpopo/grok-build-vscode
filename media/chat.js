@@ -26,32 +26,21 @@
   const historyPopover = $("history-popover");
   const scrollBottomBtn = $("scroll-bottom-btn");
 
-  // Full wire ladder for the gear picker. The model catalog for grok-4.5 only
-  // lists low/medium/high, but live set_model applies the whole set (verified
-  // 0.2.111) and the CLI's /effort docs include xhigh. Advertised extras are
-  // unioned in so future catalog values still appear.
-  const DEFAULT_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+  // Gear effort dots: low / medium / high only. Empty selection = CLI default
+  // (no --reasoning-effort). Off-menu wire levels (none/minimal/xhigh/max) stay
+  // out of the picker — the model catalog and VS Code setting match this set.
+  const DEFAULT_EFFORT_LEVELS = ["low", "medium", "high"];
   const EFFORT_TOOLTIPS = {
-    none: "None — no extra reasoning",
-    minimal: "Minimal — least reasoning",
     low: "Low — fast, lightweight reasoning",
     medium: "Medium — balanced",
     high: "High — deeper reasoning",
-    xhigh: "XHigh — deeper reasoning, slower",
-    max: "Max — deepest reasoning",
   };
   /** Tiny caption under each effort dot (scannable; full wording stays in the tooltip). */
   const EFFORT_SHORT = {
-    none: "off",
-    minimal: "min",
     low: "low",
     medium: "med",
     high: "high",
-    xhigh: "xhi",
-    max: "max",
   };
-  /** Canonical low→high order for known levels; unknown advertised values append. */
-  const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
   const state = {
     welcomeVisible: true,
@@ -93,8 +82,7 @@
     steerSupported: true,
     lastTurnUsage: null, // last prompt's billing split (#53), for the donut popover
     sessionUsage: null, // session-cumulative billing — summed by the host, not grok
-    // Effort levels for the CURRENT model (from models[]._meta.reasoningEfforts).
-    // Empty → fall back to DEFAULT_EFFORT_LEVELS in the gear picker.
+    // Model-advertised effort list (informational; gear uses fixed low/med/high).
     effortLevels: [],
     // Auth method for the gear Session section (0.2.111); null until the host posts.
     authMethod: null,
@@ -339,7 +327,6 @@
 
   function capitalize(s) {
     if (!s) return "";
-    if (s === "xhigh") return "XHigh";
     return s.charAt(0).toUpperCase() + s.slice(1);
   }
 
@@ -363,19 +350,9 @@
     return `$${n.toFixed(2)}`;
   }
 
-  /**
-   * Effort levels to show in the gear picker: always the full wire ladder,
-   * unioned with any extra values the current model advertises. Known ids keep
-   * a stable low→high order; unknown advertised values append.
-   */
+  /** Effort levels in the gear picker: fixed low / medium / high (default = empty). */
   function effortLevelsForPicker() {
-    const advertised = Array.isArray(state.effortLevels) ? state.effortLevels.filter(Boolean) : [];
-    const rank = (id) => {
-      const i = EFFORT_ORDER.indexOf(id);
-      return i < 0 ? 1000 : i;
-    };
-    return [...new Set([...DEFAULT_EFFORT_LEVELS, ...advertised])]
-      .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+    return DEFAULT_EFFORT_LEVELS.slice();
   }
 
   function syncEffortLevelsFromModels() {

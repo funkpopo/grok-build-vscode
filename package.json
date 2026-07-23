@@ -206,26 +206,18 @@
           "type": "string",
           "enum": [
             "",
-            "none",
-            "minimal",
             "low",
             "medium",
-            "high",
-            "xhigh",
-            "max"
+            "high"
           ],
           "enumDescriptions": [
             "CLI default (no flag passed to grok agent stdio)",
-            "None",
-            "Minimal",
             "Low — faster, lighter reasoning",
             "Medium",
-            "High",
-            "XHigh — deeper reasoning",
-            "Max — deepest reasoning when the model advertises it (grok 0.2.109+)"
+            "High"
           ],
           "default": "",
-          "description": "Reasoning effort passed as --reasoning-effort to grok agent stdio. The gear picker offers the full ladder (none/minimal/low/medium/high/xhigh/max); off-menu levels are applied live after session start when the spawn flag alone is ignored. Applies live on recent CLIs (grok 0.2.101+); older CLIs, and resetting to the model default, restart the session."
+          "description": "Reasoning effort passed as --reasoning-effort to grok agent stdio. Allowed values: default (empty), low, medium, high — matching the gear picker. Applies live on recent CLIs (grok 0.2.101+); older CLIs, and resetting to the model default, restart the session."
         },
         "grok.useCtrlEnterToSend": {
           "type": "boolean",

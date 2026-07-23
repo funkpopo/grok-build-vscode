@@ -31,16 +31,12 @@ import {
 import { resolveGrokHome } from "./sessions";
 import { filterAdvertisedCommands, type FilterAdvertisedOptions } from "./slash-filter";
 
-/** Reasoning-effort levels. The wire set is model-advertised (`reasoningEfforts`);
- *  `max` is valid on 0.2.109+ when the model menu includes it. */
+/** Reasoning-effort levels. The UI/setting offer default | low | medium | high;
+ *  the wire type stays open so an older saved value still forwards cleanly. */
 export type EffortLevel =
-  | "none"
-  | "minimal"
   | "low"
   | "medium"
   | "high"
-  | "xhigh"
-  | "max"
   | (string & {});
 
 export type PromptContentBlock =
@@ -145,9 +141,8 @@ type Pending = { resolve: (v: any) => void; reject: (e: any) => void; timer?: Re
 
 export function buildGrokAgentArgs(effort?: EffortLevel): string[] {
   // `--reasoning-effort` is an `agent`-level flag, so it must precede the `stdio`
-  // subcommand (after `stdio` the CLI errors "unexpected argument"). The value
-  // set is model-advertised (incl. `max` on 0.2.109+); the picker only offers
-  // levels from `models[]._meta.reasoningEfforts`.
+  // subcommand (after `stdio` the CLI errors "unexpected argument"). The
+  // extension UI/setting only offer low|medium|high (plus empty = default).
   return effort ? ["agent", "--reasoning-effort", effort, "stdio"] : ["agent", "stdio"];
 }
 
@@ -300,10 +295,8 @@ export class AcpClient extends EventEmitter {
         this.opts.log(`[acp] Failed to set model to ${modelId}: ${(err as Error).message}. Falling back to default model ${this.currentModelId}.`);
       }
     }
-    // Spawn `--reasoning-effort` is only applied for the catalog menu on some
-    // models (low/medium/high on grok-4.5); off-menu levels (none/minimal/
-    // xhigh/max) are accepted by live set_model but silently ignored at spawn.
-    // Re-apply the requested effort after session/new when it didn't stick.
+    // Spawn `--reasoning-effort` can be ignored on some paths; re-apply via live
+    // set_model after session/new when the requested effort didn't stick.
     await this.ensureRequestedEffort();
     return { sessionId: res.sessionId };
   }
