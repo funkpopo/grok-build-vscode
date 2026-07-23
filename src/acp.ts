@@ -300,6 +300,11 @@ export class AcpClient extends EventEmitter {
         this.opts.log(`[acp] Failed to set model to ${modelId}: ${(err as Error).message}. Falling back to default model ${this.currentModelId}.`);
       }
     }
+    // Spawn `--reasoning-effort` is only applied for the catalog menu on some
+    // models (low/medium/high on grok-4.5); off-menu levels (none/minimal/
+    // xhigh/max) are accepted by live set_model but silently ignored at spawn.
+    // Re-apply the requested effort after session/new when it didn't stick.
+    await this.ensureRequestedEffort();
     return { sessionId: res.sessionId };
   }
 
@@ -382,6 +387,26 @@ export class AcpClient extends EventEmitter {
    *  live via `setReasoningEffort` instead of restarting the process. */
   currentModelSupportsEffort(): boolean {
     return !!this.availableModels.find((m) => m.modelId === this.currentModelId)?.supportsReasoningEffort;
+  }
+
+  /**
+   * After session/new, push `opts.effort` via live set_model when the spawn flag
+   * didn't stick (catalog menus omit levels the wire still accepts). No-op when
+   * unset, already effective, or the model lacks supportsReasoningEffort.
+   * Resume paths must NOT call this — a loaded session keeps its own effort.
+   */
+  private async ensureRequestedEffort(): Promise<void> {
+    const wanted = this.opts.effort;
+    if (!wanted || !this.currentModelSupportsEffort()) return;
+    if (this.currentReasoningEffort === wanted) return;
+    try {
+      const ok = await this.setReasoningEffort(wanted);
+      if (!ok) {
+        this.opts.log(`[acp] Failed to apply reasoning effort ${wanted} after session/new`);
+      }
+    } catch (err) {
+      this.opts.log(`[acp] Failed to apply reasoning effort ${wanted}: ${(err as Error).message}`);
+    }
   }
 
   /** Change reasoning effort on the LIVE session — no process restart — via

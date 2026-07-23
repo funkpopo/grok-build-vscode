@@ -26,10 +26,11 @@
   const historyPopover = $("history-popover");
   const scrollBottomBtn = $("scroll-bottom-btn");
 
-  // Fallback effort ladder when the model doesn't advertise a menu (older CLI
-  // or a non-reasoning model). Live picker prefers models[]._meta.reasoningEfforts
-  // (incl. `max` on 0.2.109+ when advertised).
-  const DEFAULT_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"];
+  // Full wire ladder for the gear picker. The model catalog for grok-4.5 only
+  // lists low/medium/high, but live set_model applies the whole set (verified
+  // 0.2.111) and the CLI's /effort docs include xhigh. Advertised extras are
+  // unioned in so future catalog values still appear.
+  const DEFAULT_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
   const EFFORT_TOOLTIPS = {
     none: "None — no extra reasoning",
     minimal: "Minimal — least reasoning",
@@ -37,7 +38,7 @@
     medium: "Medium — balanced",
     high: "High — deeper reasoning",
     xhigh: "XHigh — deeper reasoning, slower",
-    max: "Max — deepest reasoning (when the model offers it)",
+    max: "Max — deepest reasoning",
   };
   /** Tiny caption under each effort dot (scannable; full wording stays in the tooltip). */
   const EFFORT_SHORT = {
@@ -363,18 +364,18 @@
   }
 
   /**
-   * Effort levels to show in the gear picker: the current model's advertised
-   * menu when present, else the static default ladder. Known ids keep a stable
-   * low→high order; unknown advertised values append.
+   * Effort levels to show in the gear picker: always the full wire ladder,
+   * unioned with any extra values the current model advertises. Known ids keep
+   * a stable low→high order; unknown advertised values append.
    */
   function effortLevelsForPicker() {
     const advertised = Array.isArray(state.effortLevels) ? state.effortLevels.filter(Boolean) : [];
-    if (!advertised.length) return DEFAULT_EFFORT_LEVELS.slice();
     const rank = (id) => {
       const i = EFFORT_ORDER.indexOf(id);
       return i < 0 ? 1000 : i;
     };
-    return [...new Set(advertised)].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+    return [...new Set([...DEFAULT_EFFORT_LEVELS, ...advertised])]
+      .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
   }
 
   function syncEffortLevelsFromModels() {

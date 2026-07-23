@@ -218,6 +218,39 @@ describe("ACP integration (real subprocess, fake CLI)", () => {
     }
   });
 
+  it("startup: off-menu default effort is re-applied live after session/new (spawn flag alone may not stick)", async () => {
+    // Fake advertises active effort "high" with menu [high,medium,low]. A
+    // requested "xhigh" must still land via set_model after newSession — mirrors
+    // real grok-4.5 where spawn --reasoning-effort xhigh is silently ignored.
+    const logs: string[] = [];
+    const stderr2: string[] = [];
+    const effortClient = new AcpClient({
+      cliPath: fixtureCli(),
+      cwd: workspace,
+      env: {
+        ...process.env,
+        FAKE_WORKSPACE_ROOT: workspace,
+        FAKE_PLAN_PATH: path.join(planHome, ".grok", "sessions", "cwd-x", "sess-effort-xhigh", "plan.md"),
+      },
+      effort: "xhigh",
+      log: (msg) => logs.push(msg),
+    });
+    effortClient.on("stderr", (t: string) => stderr2.push(t));
+
+    try {
+      await effortClient.start();
+      await effortClient.newSession();
+      expect(effortClient.currentReasoningEffort).toBe("xhigh");
+      await new Promise((r) => setTimeout(r, 150));
+      const line = stderr2.find((t) => t.includes("SET_MODEL:"));
+      expect(line).toBeDefined();
+      expect(line).toContain('"reasoningEffort":"xhigh"');
+      expect(logs.join("\n")).toContain("--reasoning-effort xhigh");
+    } finally {
+      effortClient.dispose();
+    }
+  });
+
   it("plan-snoop: grok's plan.md write is allowed AND emits planFileContent with the text", async () => {
     client.planActive = true; // gate is up, but plan.md (outside workspace) must still be allowed
     const planFireP = waitFor<string>(client, "planFileContent");
