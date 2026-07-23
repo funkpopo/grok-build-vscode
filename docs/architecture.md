@@ -140,10 +140,12 @@ and the update retries once if a lingering lock still slips through.
 
 ## Plan Mode — the one part that isn't thin
 
-Everything else mirrors the CLI. Plan Mode is enforced **client-side**, because
-the CLI's `x.ai/exit_plan_mode` is unreliable: it reports "approved" to *any*
-client reply — result or error — regardless of what the user actually chose. So
-the extension can't trust the wire verdict. Two mechanisms cover the gap:
+Everything else mirrors the CLI. Plan Mode is still partly client-owned: wire
+verdicts to `x.ai/exit_plan_mode` are semantic
+(`{outcome:"approved"|"cancelled"|"abandoned"}` via `makeExitPlanResponse` —
+since grok 0.2.101), but the CLI does **not** gate `terminal/create` in plan
+mode, so a shell can still mutate the workspace during "planning." Two
+mechanisms close the gap (see [research/plan-mode-protocol.md](../research/plan-mode-protocol.md)):
 
 - **The gate** ([src/plan-gate.ts](../src/plan-gate.ts)). While Plan Mode is
   active, the two mandatory server→client choke points are policed: a
@@ -155,9 +157,8 @@ the extension can't trust the wire verdict. Two mechanisms cover the gap:
   self-initiating it — raises the gate; only an explicit user action lowers it.
 
 - **The primer** ([src/grok-primer.ts](../src/grok-primer.ts)). A hidden system
-  message tells grok in plain English to ignore the bogus tool verdict and read
-  the real decision from the **next** user message instead, as a bracketed
-  marker: `[Plan approved]` / `[Plan rejected]` / `[Plan cancelled]` (optionally
+  message teaches the follow-up **action-signal** markers on the next user
+  message: `[Plan approved]` / `[Plan rejected]` / `[Plan cancelled]` (optionally
   followed by a free-form comment). Approve → drop the gate + send "implement it
   now"; Keep planning → the gate stays up. The primer fires **eagerly and
   non-blocking** (`ensurePrimed`) — its own hidden turn, kicked off the moment a

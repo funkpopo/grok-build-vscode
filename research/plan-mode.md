@@ -1,11 +1,10 @@
 # Plan mode — why it's disabled, and why disabling it isn't enough
 
-> **Update (grok 0.2.101):** the "`exit_plan_mode` treats any response — result or
-> error — as approval; no wire-level reject" claim below is **FIXED upstream** — a
-> success `{outcome:"cancelled"}` now rejects a plan. The extension retains the
-> primer + client-side gate anyway, because the gate is still needed for the
-> terminal-tool hole (plan mode rejects the edit tool but passes `terminal/create`).
-> See `research/plan-mode-recheck-findings.md` and `research/grok-build-oss-findings.md` §2.1.
+> **Update (P2-13 / grok 0.2.111):** wire replies are semantic success outcomes
+> (`makeExitPlanResponse` → `approved` / `cancelled` / `abandoned`). Client-side
+> plan-gate + primer markers retained (terminal still not gated CLI-side). Current
+> protocol: `research/plan-mode-protocol.md`. Historical analysis below is the
+> 0.2.3 problem statement.
 
 Research notes. Status as of `grok` 0.2.3 (native Windows), extension v1.1.0, 2026-05-27.
 

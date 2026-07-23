@@ -1,11 +1,14 @@
 // The extension's "system prompt" to grok — sent once per session (new +
 // restored) before the user's first message. Hidden from live chat (no user
 // bubble, no agent response shown) but does land in the CLI's session record.
-// The CLI bug (`exit_plan_mode` always reports "approved") can't be patched at
-// the protocol layer, so we tell grok in plain English to ignore the wire-level
-// verdict and read it from the follow-up message.
 //
-// WHY THIS IS DELIBERATELY MINIMAL (v4): grok-build is an *agentic* CLI — it
+// Wire-level `exit_plan_mode` outcomes are semantic since grok 0.2.101
+// (approved / cancelled / abandoned). The primer's remaining job is **turn
+// shape**: after the tool resolves, wait for our follow-up `[Plan …]` message
+// (implement-now / refine with comment / leave plan mode). That protocol is
+// extension-owned; the CLI does not send those markers.
+//
+// WHY THIS IS DELIBERATELY MINIMAL (v4+): grok-build is an *agentic* CLI — it
 // acts on context. The v3 primer carried two things that, combined with that
 // agency, turned a meant-to-be-instant primer turn into a 15–40s exploration
 // of the workspace BEFORE the user's real message even ran:
@@ -24,16 +27,26 @@
 // the eager non-blocking primer (sidebar.ensurePrimed) this now runs silently in
 // the background the moment a session goes live, so the user never waits on it.
 //
+// v5: drop the obsolete "tool result is always approved / do not trust it"
+// claim (false since 0.2.101; we send semantic outcomes). Protocol markers
+// unchanged.
+//
+// WHY NOT `session/new` `_meta.rules`: rules apply at session creation only.
+// We re-prime on restore and after `/compact` (history rewrite can drop the
+// primer); a one-shot rules injection does not cover those paths. Keep the
+// hidden prompt until rules are proven to survive compact + load (see
+// research/plan-mode-protocol.md).
+//
 // Versioned: bump PRIMER_VERSION whenever the text changes meaningfully so
 // future logic (re-sending the primer after compact, migrating older sessions)
 // can detect drift. The on-disk session keeps whatever primer was current when
 // it started; evolving the primer doesn't rewrite old sessions unless re-primed.
 
-export const PRIMER_VERSION = 4;
+export const PRIMER_VERSION = 5;
 
 /** Marker prefix on every primer message so we can identify it in session
  *  records and skip rendering it on restore. */
-export const PRIMER_MARKER = "[grok-build-vscode primer v4]";
+export const PRIMER_MARKER = "[grok-build-vscode primer v5]";
 
 /** Matches the marker prefix of any primer version (v1, v2, …) at the start of
  *  a message. The host uses it to recognize the primer when grok replays it as
@@ -49,7 +62,7 @@ export function isPrimerText(text: string): boolean {
 
 /** True when a grok-generated session summary/title reads like it was derived from
  *  the hidden primer (the first message of every extension session), e.g.
- *  "Grok Build VSCode Primer v4 Plan Mode" or "Hidden Primer v4". grok summarizes
+ *  "Grok Build VSCode Primer v4 Plan Mode" or "Hidden Primer v5". grok summarizes
  *  from message #1, so a primer-only session gets one of these titles. Used as the
  *  cheap pre-filter for the empty-session sweep (the authoritative check reads the
  *  chat history); deliberately conservative — it requires "primer" plus a
@@ -68,15 +81,13 @@ This is a system message, not a user request. The user cannot see it in the UI. 
 
 ## Plan Mode
 
-The \`exit_plan_mode\` tool's response is currently unreliable in this CLI version — it always reports "approved" to any client reply, regardless of what the user actually chose in the plan-review UI. **Do not trust the tool result.**
-
-After \`exit_plan_mode\` resolves, end your turn and wait for the NEXT user message. The user's actual verdict will arrive there as a bracketed marker, optionally followed by a comment:
+After \`exit_plan_mode\` resolves, end your turn and wait for the NEXT user message. The tool result carries a semantic outcome (\`approved\` / \`cancelled\` / \`abandoned\`); the user's action signal arrives in the follow-up message as a bracketed marker, optionally followed by a comment:
 
 - \`[Plan approved]\` → implement the plan
 - \`[Plan rejected]\` → stay in plan mode; if a comment follows, treat it as refinement guidance
 - \`[Plan cancelled]\` → exit plan mode; if a comment follows, respond to it normally
 - Anything else → treat as a normal user message
 
-The verdict is **always** in the follow-up message, **never** in the tool result.
+The follow-up marker is the action signal (especially for implement-now and user feedback).
 
 Reply with exactly: ok`;

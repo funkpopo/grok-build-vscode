@@ -56,9 +56,9 @@ describe("isPrimerText (host-side replay detection)", () => {
   });
 });
 
-describe("GROK_PRIMER content (v4 — trimmed to stop pre-turn exploration)", () => {
-  it("is marked v4 and starts with the marker", () => {
-    expect(PRIMER_MARKER).toBe("[grok-build-vscode primer v4]");
+describe("GROK_PRIMER content (v5 — semantic outcomes + marker protocol)", () => {
+  it("is marked v5 and starts with the marker", () => {
+    expect(PRIMER_MARKER).toBe("[grok-build-vscode primer v5]");
     expect(GROK_PRIMER.startsWith(PRIMER_MARKER)).toBe(true);
     expect(isPrimerText(GROK_PRIMER)).toBe(true);
   });
@@ -85,12 +85,15 @@ describe("GROK_PRIMER content (v4 — trimmed to stop pre-turn exploration)", ()
     expect(GROK_PRIMER).toMatch(/Reply with exactly: ok/);
   });
 
-  it("still teaches the full plan-verdict protocol (the reason the primer exists)", () => {
+  it("teaches the plan-verdict marker protocol (extension-owned action signal)", () => {
     expect(GROK_PRIMER).toContain("exit_plan_mode");
     expect(GROK_PRIMER).toContain("[Plan approved]");
     expect(GROK_PRIMER).toContain("[Plan rejected]");
     expect(GROK_PRIMER).toContain("[Plan cancelled]");
-    expect(GROK_PRIMER).toMatch(/Do not trust the tool result/i);
+    // v5: tool outcomes are semantic — do not claim "always approved".
+    expect(GROK_PRIMER).not.toMatch(/Do not trust the tool result/i);
+    expect(GROK_PRIMER).not.toMatch(/always reports "approved"/i);
+    expect(GROK_PRIMER).toMatch(/semantic outcome/i);
   });
 
   it("flags itself as a hidden system message to keep out of summaries", () => {

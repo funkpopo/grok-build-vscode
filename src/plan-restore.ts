@@ -3,10 +3,10 @@
 // without mocking vscode, the ACP client, or the filesystem.
 //
 // Background:
-//  - The CLI's `x.ai/exit_plan_mode` treats any response as approval (see
-//    research/plan-mode.md). The extension persists each resolved plan locally
-//    so the live verdict and the resume view both reflect what the user
-//    actually chose, not what the CLI thinks happened.
+//  - Wire replies to `x.ai/exit_plan_mode` are semantic outcomes
+//    (`makeExitPlanResponse`); the client-side plan-gate still enforces
+//    writes/shell. The extension persists each resolved plan locally so the
+//    live verdict and the resume view both reflect what the user chose.
 //  - Plan content + verdict + `afterUserMessage` (count of user messages sent
 //    at the moment the plan was resolved) are appended via `appendPlanEntry`.
 //  - On resume, `decideRestoreState` returns the plan-gate + CLI-mode the host

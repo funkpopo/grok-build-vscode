@@ -672,11 +672,14 @@ See design doc for the full state machine diagram.`;
   }
 
   /**
-   * Resolve a plan-review card. The CLI's `exit_plan_mode` treats *any* response
-   * as approval, so the protocol verdict is cosmetic — our gate is the real
-   * decision. Crucially, this fires *during* the planning prompt's turn, so we
-   * only respond here and defer any new prompt/set_mode to `afterTurn`, which
-   * runs once that turn completes (handleSend).
+   * Resolve a plan-review card. Wire reply is a semantic success
+   * (`approved` / `cancelled` for UI-reject / `abandoned`) — grok 0.2.101+
+   * honors those (error replies read as client disconnect). Client-side
+   * plan-gate remains the hard barrier for workspace writes + non-read-only
+   * shell (CLI still does not gate `terminal/create` in plan mode).
+   *
+   * Fires *during* the planning turn, so we only respond here and defer any
+   * new prompt/set_mode to `afterTurn` (once that turn completes).
    *
    * Three verdicts:
    *  - `approved`: drop gate, return CLI to act mode, send "implement now".
@@ -684,13 +687,13 @@ See design doc for the full state machine diagram.`;
    *    user message after the turn ends and let grok decide what to do next
    *    (re-plan, ask clarifying questions, etc.) — we don't force a specific
    *    "revise the plan" framing.
-   *  - `abandoned`: drop gate (exit plan mode entirely), no follow-up prompt.
-   *    The user wants to back out and continue freely.
+   *  - `abandoned`: drop gate (exit plan mode entirely). The user wants to back
+   *    out and continue freely.
    *
-   * `rejected`/`abandoned` cut off the CLI's false-approval continuation via
-   * `cancel()` + a content-only suppression flag. Lifecycle events
-   * (`promptComplete`, `agentEnd`) still reach the webview so `busy` clears and
-   * the send button re-enables when the cancelled turn finally ends.
+   * All three still cancel + content-suppress the remainder of the planning
+   * turn so post-tool filler does not paint; the follow-up `[Plan …]` prompt
+   * is the action signal the primer trains. Lifecycle events still reach the
+   * webview so `busy` clears when the cancelled turn ends.
    */
   private handleExitPlan(
     requestId: number | string,
@@ -701,7 +704,7 @@ See design doc for the full state machine diagram.`;
     const client = session.client;
     if (!client) return;
     const gen = session.gen;
-    client.respondExitPlan(requestId, verdict);
+    client.respondExitPlan(requestId, verdict, comment);
     this.persistPlanVerdict(session, verdict);
     // Record the resolution in the session buffer (mirrors permissionResolved)
     // so a re-focus replays the plan card collapsed with its verdict instead of
@@ -720,14 +723,10 @@ See design doc for the full state machine diagram.`;
       // comment, post it as their user bubble immediately and append it to the
       // wire-level prompt — same pattern as reject/cancel.
       this.setPlanActive(session, false);
-      // Responding unblocked grok's planning turn (the CLI treats ANY
-      // exit_plan_mode response as approval), and the primer-trained
-      // continuation is contentless by design ("I'll wait for your verdict…").
-      // Cancel + content-suppress it exactly like reject/cancel do — grok
-      // doesn't persist it into replayed history, so live must hide it too;
-      // the [Plan approved] follow-up below is the real continuation. No
-      // agentReset here (unlike reject): pre-card narration the user already
-      // read stays on screen.
+      // Cancel + content-suppress the rest of the planning turn so any
+      // post-tool filler does not paint; the [Plan approved] follow-up below
+      // is the real continuation. No agentReset here (unlike reject): pre-card
+      // narration the user already read stays on screen.
       void client.cancel("plan-verdict approved");
       session.suppressPlanReject = true;
       if (feedback) {
@@ -860,20 +859,20 @@ See design doc for the full state machine diagram.`;
   }
 
   /** Send the extension's standing instructions ("primer") to grok exactly once
-   *  per grok session — teaching it the plan-verdict protocol the CLI's buggy
-   *  exit_plan_mode can't convey. It fires EAGERLY and NON-BLOCKING the moment a
-   *  session goes live (startSession kicks this off), so the composer is never
-   *  held: the user can send immediately, and their first real prompt awaits this
-   *  same promise (grok can't run two turns at once) — released the instant the
-   *  silent primer acks. The primer's turn is hidden from live chat
-   *  (suppressContent drops grok's "ok"); the user's own message bubble + the
-   *  Grokking indicator are NOT suppressed (they're not in SUPPRESS_TYPES), so a
-   *  send that overlaps the still-running primer shows as sent right away.
+   *  per grok session — teaching it to wait for the follow-up `[Plan …]`
+   *  markers after `exit_plan_mode` (wire outcome is semantic since 0.2.101;
+   *  the markers still drive implement-now / refine / leave). Fires EAGERLY
+   *  and NON-BLOCKING the moment a session goes live (startSession), so the
+   *  composer is never held: the user can send immediately, and their first
+   *  real prompt awaits this same promise (grok can't run two turns at once).
+   *  Hidden from live chat (suppressContent drops grok's "ok"); the user's own
+   *  bubble + Grokking indicator are NOT suppressed (not in SUPPRESS_TYPES).
    *
-   *  Idempotent: returns the existing in-flight promise so a fast send doesn't
-   *  start a second primer; resolves immediately once primed. Best-effort — a
-   *  failed primer clears the promise so the next send retries, and never throws
-   *  to the caller (the plan-gate, not the primer, is the actual enforcement). */
+   *  Idempotent: reuses the in-flight promise; resolves immediately once
+   *  primed. Best-effort — failure clears the promise for retry and never
+   *  throws (the plan-gate, not the primer, is the actual enforcement).
+   *  Kept as a hidden prompt (not `session/new` `_meta.rules`) so restore and
+   *  post-`/compact` re-prime still work — see research/plan-mode-protocol.md. */
   private ensurePrimed(client: AcpClient, session: Session, gen: number): Promise<void> {
     if (session.primed) return Promise.resolve();
     if (session.primingPromise) return session.primingPromise;

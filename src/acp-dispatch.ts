@@ -636,24 +636,34 @@ export function makePermissionResponse(id: number | string, optionId: string) {
   };
 }
 
+/**
+ * Reply to `x.ai/exit_plan_mode`. As of grok 0.2.101+ the intended shape is a
+ * JSON-RPC **success** carrying `{outcome, feedback?}` — NOT an error:
+ *
+ *   approved  → stay out / exit plan, implement
+ *   cancelled → keep planning (user rejected / wants revise); CLI tells the model
+ *   abandoned → leave plan mode without implementing
+ *
+ * A JSON-RPC error is read as *client disconnect* (`ext_method_no_client`), not
+ * a verdict — so reject/abandon used to surface as "tool failed". Map our UI
+ * verdicts (approved / rejected / abandoned) onto the wire outcomes; optional
+ * user comment rides `feedback`. Re-probed on 0.2.111
+ * (`research/oss-surfaces-probe.cjs --scenario=planoutcome`). Client-side
+ * plan-gate still enforces writes/shell (CLI still does not gate terminal).
+ */
 export function makeExitPlanResponse(
   id: number | string,
   verdict: "approved" | "abandoned" | "rejected",
+  feedback?: string,
 ) {
-  if (verdict === "approved") {
-    return { jsonrpc: "2.0", id, result: { outcome: "approved" } };
-  }
-  // Reject and Abandon are sent as JSON-RPC errors. NOTE: the old rationale here
-  // ("the CLI treats any successful result as approval") is obsolete — grok
-  // 0.2.101 DOES honor a success `{outcome:"cancelled"|"abandoned"}` (mode stays
-  // plan on cancel; probe: research/oss-surfaces-probe.cjs --scenario=planoutcome).
-  // We keep the error form for now on purpose: our verdict UX is driven by the
-  // hidden primer + `[Plan approved/rejected/cancelled]` follow-up markers and the
-  // client-side gate, and switching to the outcome protocol touches that whole
-  // flow — deferred until plan-mode enforcement stabilizes CLI-side (§2.1). The
-  // error path keeps the session in plan mode, which is what we need meanwhile.
-  const message = verdict === "rejected" ? "User rejected the plan" : "User abandoned the plan";
-  return { jsonrpc: "2.0", id, error: { code: -32000, message } };
+  const outcome =
+    verdict === "approved" ? "approved"
+      : verdict === "abandoned" ? "abandoned"
+        : "cancelled"; // UI "rejected" / Keep planning
+  const result: { outcome: string; feedback?: string } = { outcome };
+  const fb = feedback?.trim();
+  if (fb) result.feedback = fb;
+  return { jsonrpc: "2.0", id, result };
 }
 
 /**

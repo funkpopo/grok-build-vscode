@@ -281,7 +281,7 @@ Grok's own **slash commands** (`/imagine`, `/compact`, …) autocomplete in the 
 
 The extension is intentionally **thin**: it speaks JSON-RPC over `grok agent stdio` and renders the results. Grok owns sessions, memory, MCP, models, and tool execution; the extension mediates file reads/writes, terminal requests, diff previews, the webview UI — and **Plan Mode**.
 
-Plan Mode is the one place the extension is *not* thin. The CLI's `exit_plan_mode` is unreliable (it reports "approved" to any reply), so the extension enforces planning itself: a **gate** blocks workspace writes and non-read-only commands until you approve, and a hidden **primer** teaches Grok to read your real verdict (`[Plan approved]` / `[Plan rejected]` / `[Plan cancelled]`) from your next message. The primer fires silently the instant a session goes live, so it never delays your first prompt.
+Plan Mode is the one place the extension is *not* thin. Wire verdicts are semantic (`approved` / `cancelled` / `abandoned`), but the CLI still does not gate shell commands in plan mode — so a **gate** blocks workspace writes and non-read-only commands until you approve, and a hidden **primer** teaches Grok to act on follow-up markers (`[Plan approved]` / `[Plan rejected]` / `[Plan cancelled]`). The primer fires silently the instant a session goes live, so it never delays your first prompt.
 
 Full diagram, message flow, module map, and design notes: **[docs/architecture.md](docs/architecture.md)**.
 

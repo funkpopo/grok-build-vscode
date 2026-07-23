@@ -1,20 +1,21 @@
 /**
  * Plan-mode enforcement policy (pure).
  *
- * grok's `x.ai/exit_plan_mode` treats *any* client response as approval, so we
- * cannot reject a plan at the protocol layer. Instead we enforce plan/act on
- * *our* side, at the two mandatory server→client choke points the agent cannot
- * avoid:
+ * Wire-level plan verdicts are semantic since grok 0.2.101
+ * (`{outcome:"approved"|"cancelled"|"abandoned"}` — see `makeExitPlanResponse`).
+ * That does **not** replace this gate: the CLI still refuses *edit* tools in
+ * plan mode but **does not** gate `terminal/create`, so a shell command can
+ * mutate the workspace during "planning". We enforce plan/act at the two
+ * mandatory server→client choke points the agent cannot avoid:
  *
  *   - `fs/write_text_file` — every file write
  *   - `terminal/create`    — every shell command
  *
- * Empirically (grok 0.2.3, ACP), a plan-mode turn only *reads* the workspace
- * (`fs/read_text_file` + internal search tools) and writes its plan to
- * `~/.grok/sessions/<cwd>/<id>/plan.md` — i.e. *outside* the workspace. So the
- * gate is not "block all writes"; it is "block writes that land inside the
- * workspace", which protects the user's project while letting grok persist its
- * own plan file.
+ * A plan-mode turn typically *reads* the workspace and writes its plan to
+ * `~/.grok/sessions/<cwd>/<id>/plan.md` — *outside* the workspace. So the
+ * write rule is not "block all writes"; it is "block writes that land inside
+ * the workspace", which protects the project while letting grok persist
+ * `plan.md`.
  *
  * These functions are pure so the policy can be unit-tested without spawning a
  * CLI; `acp.ts` / `sidebar.ts` call them with the live path/command strings.

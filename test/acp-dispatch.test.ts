@@ -468,12 +468,27 @@ describe("response builders", () => {
     });
   });
 
-  it("makeExitPlanResponse: approved sends result, rejected/abandoned send error", () => {
-    expect(makeExitPlanResponse(9, "approved").result).toEqual({ outcome: "approved" });
-    expect(makeExitPlanResponse(9, "rejected").error?.code).toBe(-32000);
-    expect(makeExitPlanResponse(9, "rejected").result).toBeUndefined();
-    expect(makeExitPlanResponse(9, "abandoned").error?.code).toBe(-32000);
-    expect(makeExitPlanResponse(9, "abandoned").result).toBeUndefined();
+  it("makeExitPlanResponse: all verdicts are semantic success outcomes (not errors)", () => {
+    // Reject/abandon used to be JSON-RPC errors; the CLI reads those as client
+    // disconnect. Prefer {outcome} success (0.2.101+ / P2-13).
+    expect(makeExitPlanResponse(9, "approved")).toEqual({
+      jsonrpc: "2.0",
+      id: 9,
+      result: { outcome: "approved" },
+    });
+    expect(makeExitPlanResponse(9, "rejected").result).toEqual({ outcome: "cancelled" });
+    expect(makeExitPlanResponse(9, "rejected").error).toBeUndefined();
+    expect(makeExitPlanResponse(9, "abandoned").result).toEqual({ outcome: "abandoned" });
+    expect(makeExitPlanResponse(9, "abandoned").error).toBeUndefined();
+  });
+
+  it("makeExitPlanResponse passes trimmed feedback when present", () => {
+    expect(makeExitPlanResponse(1, "rejected", "  two steps  ").result).toEqual({
+      outcome: "cancelled",
+      feedback: "two steps",
+    });
+    expect(makeExitPlanResponse(1, "approved", "   ").result).toEqual({ outcome: "approved" });
+    expect(makeExitPlanResponse(1, "abandoned", undefined).result).toEqual({ outcome: "abandoned" });
   });
 
   it("makeExitPlanResponse wraps in jsonrpc 2.0 envelope", () => {

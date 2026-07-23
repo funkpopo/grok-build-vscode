@@ -36,7 +36,7 @@ The CLI still thinks it is in "plan mode" and will eventually emit `x.ai/exit_pl
 | **Reject** ("Keep planning") | Stays up      | Keep gate up, cancel the false-approval turn (suppress its output), then send `[Plan rejected]` (+ the user's comment if any, which also shows as a normal user bubble). | You stay in Plan mode. Grok sees an unambiguous rejection on the wire. |
 | **Cancel**                | Lowered          | Drop gate, switch CLI to act mode, send `[Plan cancelled]` (+ the user's comment if any). | You are back in normal Agent mode. Grok's understanding is reset. |
 
-These bracketed markers are not free-form English — they are an explicit **contract** the hidden **primer** (`src/grok-primer.ts`) trained grok to recognize. The verdict is **always** carried by the follow-up message's marker, **never** by the `exit_plan_mode` tool result (which the CLI always reports as "approved"). The primer is sent lazily before the first prompt of new **and** restored sessions (re-sent on restore, not trusted from replayed history); the pure `isPrimerText()` hides it and keeps it out of the plan-position count on replay.
+These bracketed markers are not free-form English — they are an explicit **contract** the hidden **primer** (`src/grok-primer.ts`) trained grok to recognize. Since grok 0.2.101 the wire reply is also semantic (`approved` / `cancelled` / `abandoned` via `makeExitPlanResponse`); the follow-up markers remain the extension's **action signal** (implement-now / refine / leave). See `research/plan-mode-protocol.md`. The primer is sent eagerly on go-live of new **and** restored sessions (re-sent, not trusted from replayed history; also after `/compact`); the pure `isPrimerText()` hides it and keeps it out of the plan-position count on replay.
 
 **The fundamental asymmetry (the thing most people get wrong on first encounter):**
 
@@ -56,7 +56,7 @@ The extension does the protocol-correct thing:
 - "approved" → sends a JSON-RPC *result*
 - "rejected" / "abandoned" → sends a JSON-RPC *error*
 
-(See `src/acp-dispatch.ts:99-110` and the comment: "Reject and Abandon must be sent as JSON-RPC errors — the CLI treats any successful result as approval regardless of the outcome value.")
+(Wire shape: `makeExitPlanResponse` in `src/acp-dispatch.ts` — semantic success outcomes, not JSON-RPC errors.)
 
 **The bug (re-verified on grok 0.2.3 native Windows):** the CLI treats *every* response to `exit_plan_mode` (result *or* error) as approval. It exits plan mode and proceeds to execute the plan anyway.
 

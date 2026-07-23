@@ -703,9 +703,15 @@ export class AcpClient extends EventEmitter {
     this.writeLine(makePermissionResponse(requestId, optionId));
   }
 
-  /** Respond to a pending exit_plan_mode request with the user's verdict. */
-  respondExitPlan(requestId: number | string, type: "approved" | "abandoned" | "rejected"): void {
-    this.writeLine(makeExitPlanResponse(requestId, type));
+  /** Respond to a pending exit_plan_mode request with the user's verdict
+   *  (semantic `{outcome}` success — not a JSON-RPC error). Optional feedback
+   *  is the user's comment from the plan card. */
+  respondExitPlan(
+    requestId: number | string,
+    type: "approved" | "abandoned" | "rejected",
+    feedback?: string,
+  ): void {
+    this.writeLine(makeExitPlanResponse(requestId, type, feedback));
   }
 
   /** Respond to a pending ask_user_question request with the user's selections. */

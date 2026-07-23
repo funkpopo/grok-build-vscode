@@ -64,7 +64,7 @@ These are confirmed *available now*; the only work is wiring them into the exten
 - **Reasoning effort is live-settable per session** — `session/set_model` accepts `_meta.reasoningEffort` (`"none"|"minimal"|"low"|"medium"|"high"|"xhigh"`) and applies it without a process restart; `session/new` already reports the current effort + full effort list in `models[]._meta`. (We still kill/restart the process on effort change — that restart is now removable.)
 - **The live event rail is already flowing** — `_x.ai/session_notification` delivers `auto_compact_completed`, `subagent_spawned/progress/finished` (with `duration_ms`/`tokens_used`/`output`), `turn_completed` (per-turn billing usage), and `image_dropped` (the first four probe-observed; `image_dropped` source-confirmed). The extension already receives it; only the compact-donut kind is consumed so far (v1.6.1).
 - **Session RPCs are shipped (unadvertised)** — `_x.ai/session/{list,info,rename,delete,fork}` work on 0.2.101 (`rename`→`{success:true}`, `delete` removed the dir). They can replace the disk-scraping catalog for rename/delete/list.
-- **Plan verdicts have a real semantic reply** — replying to `x.ai/exit_plan_mode` with a success `{outcome:"cancelled"|"abandoned"|"approved"}` is honored (mode stays `[plan]` on cancel; the model treats it as "revise", not a tool failure). We currently send a JSON-RPC error, which the CLI reads as a client disconnect.
+- **Plan verdicts have a real semantic reply** — replying to `x.ai/exit_plan_mode` with a success `{outcome:"cancelled"|"abandoned"|"approved"}` is honored (mode stays `[plan]` on cancel; the model treats it as "revise", not a tool failure). **Shipped (P2-13):** `makeExitPlanResponse` sends those outcomes (reject → `cancelled`); no longer a JSON-RPC error / client-disconnect framing.
 - **The model's shell dialect is steerable** — setting `GROK_SHELL` in the agent's spawn env (`pwsh`/`powershell`/`bash`/`cmd`) sets the model's `Shell:` hint directly.
 - **System-prompt injection is sanctioned** — `session/new` `_meta.rules` reaches the model verbatim (the home our plan-mode primer should move to).
 - **Generated media carries a typed path** — the completed tool result includes `rawOutput` with a typed `path`, cleaner than parsing the JSON/prose text (and free of the Windows `\\?\` noise).
@@ -79,9 +79,9 @@ These are confirmed *available now*; the only work is wiring them into the exten
 
 *Deliberately deferred (with reasons — a judgment call, not blocked):*
 - ⏸ **Session RPCs adoption** (`_x.ai/session/{rename,delete,list}`) — confirmed shipped, but **unadvertised** (could change), the disk-scraping catalog is robust, rename would fight the `customName` override system, and delete-of-an-arbitrary-history-id is unprobed. Adopt when advertised/stable, or if disk-scraping becomes a real problem.
-- ⏸ **Plan verdict `{outcome:"cancelled"}`** — mechanism is probe-confirmed, but our verdict UX is driven by the primer + `[Plan …]` markers + client-side gate, and plan-mode enforcement is in flux CLI-side (§2.1). Switching now risks rework against a moving target. (Stale comment in `makeExitPlanResponse` corrected.)
+- ✅ **Plan verdict `{outcome:"cancelled"|"abandoned"|"approved"}`** (P2-13) — semantic success replies; plan-gate + `[Plan …]` follow-ups retained; primer v5.
 - ⏸ **Media `rawOutput.path` parsing** — needs a live `/imagine` wire capture to confirm the typed `rawOutput` shape; guessing would repeat the bare-`x.ai/` mistake. Text-parsing works meanwhile.
-- ⏸ **Primer → `_meta.rules`** — largest change; must handle legacy/resumed sessions (rules apply at session creation, so a fresh-session probe does NOT prove migration / `/compact` survival / restore); downstream of the same plan-mode uncertainty.
+- ⏸ **Primer → `_meta.rules`** — evaluated in P2-13 / `research/plan-mode-protocol.md`: **defer**. Rules apply at create only; restore + post-`/compact` re-prime still need the hidden prompt.
 
 Permissions honesty (§2.11) is optional (#49 is closed).
 

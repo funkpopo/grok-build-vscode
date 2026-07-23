@@ -128,19 +128,19 @@ the real question is *which* non-edit tools may run during planning. **Ask:** de
 plan-mode tool policy (read-only shell + read-only MCP/web permitted; everything mutating blocked at
 the same gate), not just an edit-tool block.
 
-**The rejection-outcome ask is withdrawn — it already exists, and the error path we used was our
-client gap.** The intended reply to `x.ai/exit_plan_mode` is a JSON-RPC **success** carrying
-`{"outcome": "approved" | "cancelled" | "abandoned"}`
-(`xai-grok-tools/src/implementations/grok_build/exit_plan_mode/types.rs:18-25`, mapped fail-closed
-to `cancelled` at `tool_calls.rs:193-203`): `cancelled` keeps plan mode up and the CLI itself tells
-the model the user wants to revise (`tool_calls.rs:1266-1287`); `abandoned` deactivates plan mode.
-A JSON-RPC **error** — what we sent — is deliberately read as a client *disconnect*
-(`ext_method_no_client`, `tool_calls.rs:215-220`), which is exactly the "tool failure" framing we
-observed. Residual nit: this schema is undocumented; a note in the agent-mode guide would have saved
-the probe. Also pinned: `planContent` is null exactly when `plan.md` is empty/whitespace, missing,
-or unreadable at intercept time (`tool_calls.rs:106-113`, `:1204-1227`) — so the ask to keep it
-populated reduces to "the model called `exit_plan_mode` without drafting a plan", a model behavior,
-not a wire defect.
+**The rejection-outcome ask is withdrawn — it already exists, and the error path was our
+client gap (fixed in the extension, P2-13).** The intended reply to `x.ai/exit_plan_mode` is a
+JSON-RPC **success** carrying `{"outcome": "approved" | "cancelled" | "abandoned"}` (+ optional
+`feedback`) (`xai-grok-tools/src/implementations/grok_build/exit_plan_mode/types.rs:18-25`, mapped
+fail-closed to `cancelled` at `tool_calls.rs:193-203`): `cancelled` keeps plan mode up and the CLI
+itself tells the model the user wants to revise (`tool_calls.rs:1266-1287`); `abandoned` deactivates
+plan mode. A JSON-RPC **error** is deliberately read as a client *disconnect*
+(`ext_method_no_client`, `tool_calls.rs:215-220`). Residual nit: this schema is undocumented; a note
+in the agent-mode guide would have saved the probe. Also pinned: `planContent` is null exactly when
+`plan.md` is empty/whitespace, missing, or unreadable at intercept time
+(`tool_calls.rs:106-113`, `:1204-1227`) — so the ask to keep it populated reduces to "the model
+called `exit_plan_mode` without drafting a plan", a model behavior, not a wire defect. Re-probed
+on **0.2.111**. **Still open:** plan-mode terminal gate (§ above) — client `plan-gate` remains.
 
 ### 2.2 Slash commands: dispatch requires position 0, and TUI-only commands are advertised
 - A slash command dispatches **only** when it starts the prompt's text block. Editor-injected
