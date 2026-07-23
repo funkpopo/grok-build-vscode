@@ -11,7 +11,7 @@ import { resolveVoiceKey, extractGrokAuthKey, parseVoiceCommand, DEFAULT_SEND_PH
 import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voice-recorder";
 import { VoiceStreamer } from "./voice-streamer";
 import type { PromptResultMeta } from "./acp-dispatch";
-import { MediaRef, addUsage, autoCompactStartedNote, contextUsedFromCompactNotification, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, parseSessionInfoContext, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, summarizeBackgroundCommand, usageIsRealMeasurement } from "./acp-dispatch";
+import { MediaRef, addUsage, autoCompactFailedNotice, autoCompactStartedNote, autoRecoveryExhaustedNote, autoRecoveryStartedNote, contextUsedFromCompactNotification, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, parseSessionInfoContext, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, summarizeBackgroundCommand, usageIsRealMeasurement } from "./acp-dispatch";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
 import { GROK_VIEW_ID, moveViewContainerFor } from "./view-move";
 import {
@@ -1236,11 +1236,12 @@ See design doc for the full state machine diagram.`;
    * `agent stdio` regression (issue #22) — 0.2.61–0.2.70 hang at startup (the agent
    * doesn't read stdin until EOF, which never comes for a live client), so a session
    * can't start at all. We detect that bounded range from `grok --version` *before*
-   * spawning and run `grok update --version <supported>` to move onto the fixed build
-   * (0.2.72). Runs at most once per activation; best-effort — a failed probe or pin is
-   * logged and we proceed (the user still gets the actionable start-failure error).
-   * Once a newer Windows-verified build ships, bump `GROK_STDIO_DOWNGRADE_TARGET` and
-   * widen the broken range to include the now-superseded builds.
+   * spawning and run `grok update --version <supported>` to move onto
+   * `GROK_STDIO_DOWNGRADE_TARGET`. Runs at most once per activation; best-effort — a
+   * failed probe or pin is logged and we proceed (the user still gets the actionable
+   * start-failure error). Once a newer Windows-verified build ships, bump
+   * `GROK_STDIO_DOWNGRADE_TARGET` (and widen the broken range only if a *new* broken
+   * band appears above 0.2.70).
    */
   private async maybePinBrokenCli(cliPath: string): Promise<void> {
     if (this.brokenCliPinned) return;
@@ -1259,12 +1260,12 @@ See design doc for the full state machine diagram.`;
   }
 
   /**
-   * Run `grok update --version <supported>` (0.2.72) and notify the user, returning
-   * true on success. Shared by the proactive pin (`maybePinBrokenCli`, before spawn —
-   * moves a 0.2.61–0.2.70 build *up* to 0.2.72) and the reactive recovery (after an
-   * observed startup failure on a future build *above* 0.2.72 — a downgrade).
-   * Best-effort: a failure is logged and returns false. Every pin surfaces a one-time
-   * notification.
+   * Run `grok update --version <supported>` (`GROK_STDIO_DOWNGRADE_TARGET`) and notify
+   * the user, returning true on success. Shared by the proactive pin
+   * (`maybePinBrokenCli`, before spawn — moves a 0.2.61–0.2.70 build *up* to the
+   * target) and the reactive recovery (after an observed startup failure on a future
+   * build *above* the target — a downgrade). Best-effort: a failure is logged and
+   * returns false. Every pin surfaces a one-time notification.
    */
   private async downgradeBrokenCli(
     cliPath: string,
@@ -1571,9 +1572,10 @@ See design doc for the full state machine diagram.`;
     if (gen !== session.gen) return undefined;
 
     // If the (possibly just-updated) CLI is on a build with the Windows stdio
-    // regression (issue #22, builds 0.2.61–0.2.70), pin it to the supported version
-    // (0.2.72) before we spawn — otherwise the ACP handshake hangs forever. Runs after
-    // the silent update so it corrects an upgrade that landed on a still-broken build.
+    // regression (issue #22, builds 0.2.61–0.2.70), pin it to
+    // GROK_STDIO_DOWNGRADE_TARGET before we spawn — otherwise the ACP handshake hangs
+    // forever. Runs after the silent update so it corrects an upgrade that landed on a
+    // still-broken build.
     await this.maybePinBrokenCli(cliPath);
     if (gen !== session.gen) return undefined;
 
@@ -1791,16 +1793,25 @@ See design doc for the full state machine diagram.`;
       // Compaction FAILED (either path — compaction.rs emits it on both). The
       // context is unchanged, so the donut needs no refresh; mark handled so the
       // /session-info fallback doesn't run, flag it so a manual /compact paints
-      // the failure instead of a false "Compacted.", and surface a note.
+      // the failure instead of a false "Compacted.", and surface a classified
+      // note (#57/#58 — limit/entitlement/credential share the turn-failure
+      // triage; never open the sign-in overlay from this rail alone).
       if (kind === "auto_compact_failed") {
         session.sawCompactNotification = true;
         session.sawCompactFailed = true;
-        const err = (u as { error?: unknown })?.error;
         this.emit(session, {
           type: "autoCompactNotice",
-          text: typeof err === "string" && err.trim() ? `Compaction failed: ${err.trim()}` : "Compaction failed.",
+          text: autoCompactFailedNotice((u as { error?: unknown })?.error),
         });
       }
+      // CLI mid-turn auth recovery (0.2.110+): transparent 401 refresh + retry
+      // of compact/original prompt. Surface progress; do NOT also kill the
+      // process here — recoverAuthAndResend only runs if the prompt ultimately
+      // fails after recovery exhausts (one guarded reload, same classifiers).
+      const recoveryStarted = autoRecoveryStartedNote(u);
+      if (recoveryStarted) this.emit(session, { type: "autoCompactNotice", text: recoveryStarted });
+      const recoveryExhausted = autoRecoveryExhaustedNote(u);
+      if (recoveryExhausted) this.emit(session, { type: "autoCompactNotice", text: recoveryExhausted });
       // Subagent lifecycle rides this LIVE rail (not the persist/replay
       // subagentLifecycle channel). Re-route to the same `subagentUpdate` the
       // webview cards already consume — subagent_finished fills duration/output.
@@ -2066,11 +2077,12 @@ See design doc for the full state machine diagram.`;
         // (`initialize` on 0.2.61–0.2.64, `session/new` on 0.2.67/0.2.69/0.2.70) and was
         // fixed in 0.2.71. The proactive pin (maybePinBrokenCli) covers that bounded
         // range before spawning; this reactive net is the backstop for a *future*
-        // still-broken build above 0.2.72, or when the proactive pin couldn't run
-        // (version read failed, or the binary was locked so `grok update` couldn't
-        // rename it). We switch to 0.2.72 on the observed failure and retry the spawn
-        // once. After the pin the version is 0.2.72, so shouldReactivelyDowngrade()
-        // can't loop; a later manual re-upgrade above 0.2.72 re-arms the recovery.
+        // still-broken build above GROK_STDIO_DOWNGRADE_TARGET, or when the proactive
+        // pin couldn't run (version read failed, or the binary was locked so
+        // `grok update` couldn't rename it). We switch to the target on the observed
+        // failure and retry the spawn once. After the pin the version equals the
+        // target, so shouldReactivelyDowngrade() can't loop; a later manual re-upgrade
+        // above the target re-arms the recovery.
         const version = await this.readGrokVersion(cliPath);
         if (!this.reactiveDowngradeInFlight && shouldReactivelyDowngrade(version, process.platform)) {
           this.reactiveDowngradeInFlight = true;
@@ -3590,8 +3602,8 @@ See design doc for the full state machine diagram.`;
         // lands DURING this turn on the live `_x.ai/session_notification` rail
         // (auto_compact_completed.tokens_after → the xaiNotification listener,
         // which sets sawCompactNotification). If that rail didn't fire — a CLI
-        // that predates it, e.g. the Windows downgrade target 0.2.72 — fall back
-        // to the hidden /session-info scrape (exact, CLI-local, before agentEnd).
+        // that predates it (pre-rail CLIs) — fall back to the hidden /session-info
+        // scrape (exact, CLI-local, before agentEnd).
         if (!session.sawCompactNotification) {
           await this.refreshContextAfterCompact(client, session, gen);
           if (gen !== session.gen) return;
@@ -3678,8 +3690,15 @@ See design doc for the full state machine diagram.`;
    * sign-in overlay; billing/entitlement wording that a fresh process couldn't
    * clear is NOT fixable by login (the CLI maps 403 to a plain error precisely
    * because the credential was accepted) and shows the in-chat entitlement
-   * notice instead. Returns true when it handled the error (caller must not
-   * also show it).
+   * notice instead.
+   *
+   * Same path covers the 0.2.110+ auto-compact auth abort ("auto-compact auth
+   * failure: aborting turn for re-auth" / session-expired compact errors): the
+   * CLI first tries mid-turn `auto_recovery_*` itself; only if the prompt still
+   * fails do we land here. We never open the overlay from the compact-failure
+   * *notification* alone — that would race the CLI's own retry and leave
+   * "Grokking…" stuck if the turn later settles without agentError. Returns true
+   * when it handled the error (caller must not also show it).
    */
   private async recoverAuthAndResend(
     session: Session,

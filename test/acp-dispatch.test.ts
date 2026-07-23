@@ -4,6 +4,9 @@ import {
   collectToolImages,
   contextUsedFromCompactNotification,
   autoCompactStartedNote,
+  autoCompactFailedNotice,
+  autoRecoveryStartedNote,
+  autoRecoveryExhaustedNote,
   isSubagentLifecycleUpdate,
   extractGeneratedMediaPaths,
   extractImageContent,
@@ -356,6 +359,84 @@ describe("autoCompactStartedNote (surface silent automatic compaction)", () => {
   });
 });
 
+describe("autoCompactFailedNotice (compact failure uses #57/#58 triage)", () => {
+  // Wire copy from grok 0.2.110+ (binary-confirmed) — auto-compact aborts the
+  // turn for re-auth rather than only emitting a generic compaction fault.
+  const COMPACT_AUTH_ABORT = "auto-compact auth failure: aborting turn for re-auth";
+  const SESSION_EXPIRED_RESEND =
+    "your session has expired or your credentials were rejected. Run /login to re-authenticate, then resend your message.";
+  const WEEKLY = "You hit your weekly limit.";
+  const SUBSCRIPTION = "The model 'grok-build' requires a Grok subscription.";
+
+  it("empty / missing → generic Compaction failed", () => {
+    expect(autoCompactFailedNotice(undefined)).toBe("Compaction failed.");
+    expect(autoCompactFailedNotice(null)).toBe("Compaction failed.");
+    expect(autoCompactFailedNotice("")).toBe("Compaction failed.");
+    expect(autoCompactFailedNotice("   ")).toBe("Compaction failed.");
+  });
+
+  it("generic compaction faults stay prefixed", () => {
+    expect(autoCompactFailedNotice("conversation is empty")).toBe("Compaction failed: conversation is empty");
+    expect(autoCompactFailedNotice("Compaction failed after max retries"))
+      .toBe("Compaction failed: Compaction failed after max retries");
+  });
+
+  it("credential-shaped compact abort keeps re-login wording (prefixed)", () => {
+    expect(autoCompactFailedNotice(COMPACT_AUTH_ABORT))
+      .toBe(`Compaction failed: ${COMPACT_AUTH_ABORT}`);
+    expect(autoCompactFailedNotice(SESSION_EXPIRED_RESEND))
+      .toBe(`Compaction failed: ${SESSION_EXPIRED_RESEND}`);
+  });
+
+  it("usage-limit failure is the limit notice, not a compaction/sign-in problem", () => {
+    const notice = autoCompactFailedNotice(WEEKLY);
+    expect(notice).toMatch(/Usage limit reached/i);
+    expect(notice).toMatch(/not a sign-in issue/i);
+    expect(notice).not.toMatch(/^Compaction failed/i);
+  });
+
+  it("entitlement failure is the entitlement notice, never a sign-in prompt", () => {
+    const notice = autoCompactFailedNotice(SUBSCRIPTION);
+    expect(notice).toMatch(/not a sign-in issue/i);
+    expect(notice).toContain(SUBSCRIPTION);
+    expect(notice).not.toMatch(/^Compaction failed/i);
+  });
+});
+
+describe("auto_recovery_* notes (CLI mid-turn 401 recovery, 0.2.110+)", () => {
+  it("autoRecoveryStartedNote: delay_ms → countdown, else plain", () => {
+    expect(autoRecoveryStartedNote({ sessionUpdate: "auto_recovery_started", delay_ms: 2500 }))
+      .toBe("Re-authenticating (retry in 3s)\u{2026}");
+    expect(autoRecoveryStartedNote({ sessionUpdate: "auto_recovery_started" }))
+      .toBe("Re-authenticating\u{2026}");
+    expect(autoRecoveryStartedNote({ sessionUpdate: "auto_recovery_started", delay_ms: 0 }))
+      .toBe("Re-authenticating\u{2026}");
+  });
+
+  it("autoRecoveryStartedNote: null for other kinds", () => {
+    expect(autoRecoveryStartedNote({ sessionUpdate: "auto_compact_failed" })).toBeNull();
+    expect(autoRecoveryStartedNote(null)).toBeNull();
+  });
+
+  it("autoRecoveryExhaustedNote: classifies attached error; generic fallback", () => {
+    expect(autoRecoveryExhaustedNote({ sessionUpdate: "auto_recovery_exhausted" }))
+      .toMatch(/Re-authentication failed/);
+    expect(autoRecoveryExhaustedNote({
+      sessionUpdate: "auto_recovery_exhausted",
+      error: "You hit your weekly limit.",
+    })).toMatch(/Usage limit reached/i);
+    expect(autoRecoveryExhaustedNote({
+      sessionUpdate: "auto_recovery_exhausted",
+      error: "Session expired. Run `grok login` to re-authenticate.",
+    })).toMatch(/Re-authentication failed: Session expired/);
+  });
+
+  it("autoRecoveryExhaustedNote: null for other kinds", () => {
+    expect(autoRecoveryExhaustedNote({ sessionUpdate: "auto_recovery_started" })).toBeNull();
+    expect(autoRecoveryExhaustedNote({})).toBeNull();
+  });
+});
+
 describe("isSubagentLifecycleUpdate (re-routing the live rail to subagent cards)", () => {
   it("matches the two kinds the webview cards act on (spawned, finished)", () => {
     expect(isSubagentLifecycleUpdate({ sessionUpdate: "subagent_spawned", subagent_id: "x" })).toBe(true);
@@ -481,6 +562,17 @@ describe("isAuthErrorText (expired-token auto-recovery gate)", () => {
     expect(isAuthErrorText("authentication failed")).toBe(true);
   });
 
+  it("matches 0.2.110+ auto-compact auth-abort / re-auth phrasing (p0-2)", () => {
+    // CLI aborts the turn so the client (or TUI /login) can re-auth + resend;
+    // the old authenticat…failed pattern missed these and skipped recovery.
+    expect(isAuthErrorText("auto-compact auth failure: aborting turn for re-auth")).toBe(true);
+    expect(isAuthErrorText(
+      "your session has expired or your credentials were rejected. Run /login to re-authenticate, then resend your message.",
+    )).toBe(true);
+    expect(isAuthErrorText("Re-authenticated after 401; retrying request")).toBe(true); // 401
+    expect(isAuthErrorText("Please run 'grok login' to re-authenticate.")).toBe(true);
+  });
+
   it("matches the billing/entitlement phrasing an expired token masquerades as", () => {
     // The reported symptom: a valid SuperGrok sub still shows a "pay" error when
     // the token lapsed — this is the case the whole recovery exists for.
@@ -601,6 +693,17 @@ describe("credential vs entitlement classification (#58 — a missing subscripti
     expect(isCredentialError(new Error("Not logged in. Run `grok login`."))).toBe(true);
     expect(isCredentialError(new Error("401 Unauthorized"))).toBe(true);
     expect(isCredentialError(new Error("invalid API key"))).toBe(true);
+  });
+
+  it("isCredentialError: matches 0.2.110+ auto-compact auth abort (overlay after failed resend)", () => {
+    expect(isCredentialError({
+      code: -32603,
+      data: "auto-compact auth failure: aborting turn for re-auth",
+    })).toBe(true);
+    expect(isCredentialError({
+      code: -32603,
+      data: "your session has expired or your credentials were rejected. Run /login to re-authenticate, then resend your message.",
+    })).toBe(true);
   });
 
   it("isCredentialError: entitlement / 403 / policy texts are NOT credential problems", () => {

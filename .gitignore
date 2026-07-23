@@ -10,3 +10,5 @@ docs/codex-style-analysis.md
 
 # Runtime artifacts written by agent commands during dev/testing
 terminals/
+
+todo.md

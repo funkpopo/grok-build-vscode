@@ -623,6 +623,21 @@ describe("Grokking… indicator (waiting placeholder)", () => {
     expect(nodes.indexOf(notice)).toBeLessThan(nodes.indexOf(bubbles[1]));
   });
 
+  it("autoCompactNotice mid-turn re-shows Grokking so compact/re-auth never freezes the indicator", () => {
+    // addAutoCompactNotice hideGrokking()s to place the notice; without the
+    // TURN_PROGRESS re-assert the busy turn would look idle until the next
+    // chunk (or forever if the turn only ends on agentError later) — the
+    // 0.2.110 auto-compact auth path's "stuck Grokking" failure mode.
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "agentStart" });
+    expect(grokking(doc)).not.toBeNull();
+    dispatch(window, { type: "autoCompactNotice", text: "Re-authenticating…" });
+    expect(doc.querySelector(".plan-notice")!.textContent).toContain("Re-authenticating");
+    expect(grokking(doc)).not.toBeNull(); // still busy, indicator restored
+    dispatch(window, { type: "agentError", text: "Session expired. Run `grok login`." });
+    expect(grokking(doc)).toBeNull(); // agentError clears busy + indicator
+  });
+
   it("shows on every turn, not just the first (a general typing indicator)", () => {
     const { window, doc } = bootWebview();
     // Turn 1 completes.

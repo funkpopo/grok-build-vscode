@@ -47,13 +47,14 @@ export function extensionWasUpgraded(lastSeen: string | undefined, current: stri
 
 /**
  * The supported grok CLI version the extension pins Windows to. The `agent stdio`
- * #22 regression broke **0.2.61–0.2.70**; the fix landed in **0.2.71** and is now on
- * the **stable** channel as **0.2.72** (the supported build here), verified end-to-end
- * via the session/new probe + the live ACP gate. We pin a broken build to this. Bump
- * it when a newer Windows-verified build ships — re-verify with the **session/new**
- * probe, not just `initialize`.
+ * #22 regression broke **0.2.61–0.2.70**; the fix landed in **0.2.71**. The extension
+ * currently treats **0.2.111** as the supported build (stable channel; verified
+ * 2026-07-23 on native Windows via the session/new stdin-open probe + the live ACP
+ * gate). Broken builds are pinned *up* to this; a reactive startup failure on a
+ * build *above* this pins back *down* to it. Bump when a newer Windows-verified
+ * build ships — re-verify with the **session/new** probe, not just `initialize`.
  */
-export const GROK_STDIO_DOWNGRADE_TARGET = "0.2.72";
+export const GROK_STDIO_DOWNGRADE_TARGET = "0.2.111";
 
 /**
  * Parse a grok `--version` banner ("grok 0.2.64 (9a9ac25b10) [stable]") into a
@@ -71,15 +72,14 @@ export function parseGrokVersion(versionOutput: string): [number, number, number
  * ACP startup request timed out and the process was torn down ("exited with code
  * null"). It mutated across builds — 0.2.61–0.2.64 hung at `initialize`;
  * 0.2.67/0.2.69/0.2.70 answered `initialize` but hung at `session/new` — and was
- * **fixed in 0.2.71**, now on stable as **0.2.72** (`GROK_STDIO_DOWNGRADE_TARGET`),
- * verified via the session/new probe + the live ACP gate. See issue #22 and
- * `research/stdio-eof-regression.md`.
+ * **fixed in 0.2.71**. The supported pin is `GROK_STDIO_DOWNGRADE_TARGET` (currently
+ * **0.2.111**). See issue #22 and `research/stdio-eof-regression.md`.
  *
  * Detect the bounded broken range **0.2.61–0.2.70** (Windows only) so the host pins
- * those builds to the supported 0.2.72 before spawning. The fix sits *above* the broken
- * range, so this is a closed range — not an open-ended "anything newer" check: both
- * 0.2.71+ and <=0.2.60 are fine. A *future* still-broken build above 0.2.72 is caught
- * reactively (`shouldReactivelyDowngrade`). Pure.
+ * those builds to the supported target before spawning. The fix sits *above* the
+ * broken range, so this is a closed range — not an open-ended "anything newer"
+ * check: both 0.2.71+ and <=0.2.60 are fine. A *future* still-broken build above
+ * the target is caught reactively (`shouldReactivelyDowngrade`). Pure.
  */
 export function isStdioBrokenGrokVersion(versionOutput: string, platform: NodeJS.Platform): boolean {
   if (platform !== "win32") return false;
@@ -101,8 +101,8 @@ export function compareVersionTuple(a: [number, number, number], b: [number, num
  * The #22 Windows update pause is **lifted** now that 0.2.71 fixes the regression —
  * updates proceed normally on every platform (to `latest`). The #22 safety net still
  * stands behind this: the proactive pin (`isStdioBrokenGrokVersion` → 0.2.61–0.2.70)
- * and the reactive downgrade (`shouldReactivelyDowngrade` → builds above 0.2.72)
- * recover a session if an update ever lands on a still-broken build.
+ * and the reactive downgrade (`shouldReactivelyDowngrade` → builds above the
+ * supported target) recover a session if an update ever lands on a still-broken build.
  */
 export interface GrokUpdatePolicy {
   /** May the update run at all? */
@@ -124,12 +124,13 @@ export function grokUpdatePolicy(_versionOutput: string, _platform: NodeJS.Platf
  *
  * The proactive `isStdioBrokenGrokVersion` covers the known broken range
  * (0.2.61–0.2.70) before spawning. This is the evidence-driven backstop for a *future*
- * still-broken build **above** the supported 0.2.72 (no static range can predict it),
- * or for cases the proactive pin couldn't run (version read failed, or the binary was
- * locked so `grok update` couldn't rename it). It fires on the real failure
- * (`initialize` *or* `session/new`), not a version guess, and pins back to 0.2.72.
+ * still-broken build **above** `GROK_STDIO_DOWNGRADE_TARGET` (no static range can
+ * predict it), or for cases the proactive pin couldn't run (version read failed, or
+ * the binary was locked so `grok update` couldn't rename it). It fires on the real
+ * failure (`initialize` *or* `session/new`), not a version guess, and pins back to
+ * the target.
  *
- * Windows-only (the regression is). A build at/below 0.2.72 is never downgraded —
+ * Windows-only (the regression is). A build at/below the target is never downgraded —
  * that's the loop guard: once the pin lands the version is exactly the target, so a
  * subsequent failure (some other cause) can't trigger another downgrade. A later
  * *manual* re-upgrade pushes the version back above the target, so a fresh failure

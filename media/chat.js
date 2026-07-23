@@ -5058,8 +5058,13 @@
   // Mid-turn events the agent emits while producing output. After each one we
   // re-assert that some progress indicator is visible (ensureActivityIndicator).
   // promptComplete is deliberately omitted — it's the turn-end boundary.
+  // autoCompactNotice is included: addAutoCompactNotice hides Grokking to place
+  // the notice, but the turn is still in flight (CLI mid-turn re-auth / compact
+  // retry) — without re-asserting, the composer stays busy with no "Grokking…"
+  // affordance until the next chunk (or forever if the turn only errors later).
   const TURN_PROGRESS_MSGS = new Set([
     "agentStart", "thoughtChunk", "messageChunk", "toolCall", "toolCallUpdate", "media",
+    "autoCompactNotice",
   ]);
 
   window.addEventListener("message", (e) => {

@@ -1,16 +1,22 @@
 # `grok agent stdio` Windows regression — stdin not read until EOF (issue #22)
 
-**Status: FIXED** — the fix landed in Grok CLI **0.2.71** and is now on the **stable**
-channel as **0.2.72** (verified 2026-06-28). The regression spanned **0.2.61–0.2.70**:
-0.2.61–0.2.64 hung at `initialize`; 0.2.67/0.2.69/0.2.70 answered `initialize` but hung at
-the *next* request (`session/new`). 0.2.71 (and 0.2.72) answer `session/new` with stdin
-held open and pass the full live ACP gate (handshake, prompt round-trip, session restore,
-plan-mode, subagent). Last pre-fix working build was **0.2.60**. **Windows-only** — macOS
-ran the broken builds fine (see § macOS is not affected). As of **v1.4.18** the extension
-adopts **0.2.72 as the supported build** (`GROK_STDIO_DOWNGRADE_TARGET`): it pins the
-bounded broken range **0.2.61–0.2.70** up to 0.2.72 before spawning, re-enables Windows
-updates, and keeps the reactive net as a backstop for any *future* build above 0.2.72.
-Tracked in extension issue [#22](https://github.com/phuryn/grok-build-vscode/issues/22).
+**Status: FIXED** — the fix landed in Grok CLI **0.2.71** (first good build above
+0.2.60; early stable pin was **0.2.72**, verified 2026-06-28). The regression spanned
+**0.2.61–0.2.70**: 0.2.61–0.2.64 hung at `initialize`; 0.2.67/0.2.69/0.2.70 answered
+`initialize` but hung at the *next* request (`session/new`). 0.2.71+ answer `session/new`
+with stdin held open. Last pre-fix working build was **0.2.60**. **Windows-only** — macOS
+ran the broken builds fine (see § macOS is not affected).
+
+**Supported pin (current):** `GROK_STDIO_DOWNGRADE_TARGET = **0.2.111**` (bumped
+2026-07-23). Verified on native Windows: `stdio-eof-sessionnew-probe.cjs` →
+`session/new` @468ms with stdin **open**; live gate green for handshake, capabilities,
+`effort-live`, cancel-mid-turn, interject, session-fork, parallel-sessions (one flaky
+`effort-live` init timeout on first smoke retry, re-run PASS). Broken range remains
+**0.2.61–0.2.70** only (no new broken band). Proactive pin moves those builds *up* to
+0.2.111; reactive recovery only fires for a *future* build **above** 0.2.111 after an
+observed startup failure — so a working mid-range install (e.g. 0.2.72–0.2.110) is no
+longer yanked down to 0.2.72 on an unrelated timeout. Tracked in extension issue
+[#22](https://github.com/phuryn/grok-build-vscode/issues/22).
 
 > **0.2.71 (alpha) probe, 2026-06-28** — the hourly fix-watch caught it. `session/new`
 > answered @1848ms with stdin **open** (notifications arrived *before* EOF), and
@@ -136,26 +142,26 @@ Any persistent client hangs.
 
 ## Extension mitigation (shipped)
 
-As of **v1.4.18** the extension adopts **0.2.72 as the supported build** (the fix landed
-in 0.2.71, now on stable as 0.2.72) (`GROK_STDIO_DOWNGRADE_TARGET`): before spawning it
-reads `grok --version`, and if the build is in the bounded broken range **0.2.61–0.2.70**
-(`isStdioBrokenGrokVersion`, [src/cli-locator.ts](../src/cli-locator.ts)) it runs
-`grok update --version 0.2.72` ([src/sidebar.ts](../src/sidebar.ts) `maybePinBrokenCli`) —
-moving those builds *up* to the fix. Windows updates are **no longer paused**
-(`grokUpdatePolicy` allows normally), and the reactive net (`shouldReactivelyDowngrade`)
-is the backstop for a *future* build **above** 0.2.72 that's still broken, or for when the
-proactive pin couldn't run (version read failed, or the binary was locked) — it recovers
-on an observed startup failure at **`initialize` *or* `session/new`**. When a newer
-Windows-verified build ships (re-verify with the **session/new** probe, not just
-`initialize`), bump `GROK_STDIO_DOWNGRADE_TARGET` and widen the broken range to include the
-superseded builds.
+Before spawning, the extension reads `grok --version`. If the build is in the bounded
+broken range **0.2.61–0.2.70** (`isStdioBrokenGrokVersion`,
+[src/cli-locator.ts](../src/cli-locator.ts)) it runs
+`grok update --version <GROK_STDIO_DOWNGRADE_TARGET>`
+([src/sidebar.ts](../src/sidebar.ts) `maybePinBrokenCli`) — moving those builds *up* to
+the supported pin. Windows updates are **no longer paused** (`grokUpdatePolicy` allows
+normally). The reactive net (`shouldReactivelyDowngrade`) is the backstop for a *future*
+build **above** the target that's still broken, or for when the proactive pin couldn't
+run (version read failed, or the binary was locked) — it recovers on an observed startup
+failure at **`initialize` *or* `session/new`**. When a newer Windows-verified build ships
+(re-verify with the **session/new** probe, not just `initialize`), bump
+`GROK_STDIO_DOWNGRADE_TARGET`; widen the broken range only if a *new* broken band appears.
 
 > **History:** v1.4.12 introduced the 0.2.60 pin (range closed at 0.2.64); v1.4.13 added
 > the reactive net; v1.4.15 extended the range to 0.2.67 and broadened the reactive trigger
 > to `session/new` after 0.2.67 only *moved* the bug; v1.4.17 made the proactive guard
 > open-ended (any build above 0.2.60) after alpha 0.2.69/0.2.70 also hung; **v1.4.18 adopts
 > the fix** — bounded broken range 0.2.61–0.2.70, supported floor 0.2.72 (fix landed in
-> 0.2.71, promoted to stable as 0.2.72), Windows updates re-enabled.
+> 0.2.71, promoted to stable as 0.2.72), Windows updates re-enabled; **working tree
+> 2026-07-23** raises the floor to **0.2.111** (broken range unchanged).
 
 ---
 

@@ -444,6 +444,75 @@ export function autoCompactStartedNote(update: unknown): string | null {
 }
 
 /**
+ * User-facing text for an `auto_compact_failed` notification's `error` field.
+ * Runs the same #57/#58 triage as a turn failure (`promptErrorText`) so a
+ * compact that fails on a usage limit or missing entitlement never reads as
+ * "sign in again", and a credential-shaped abort (0.2.110+ auto-compact auth
+ * path — "session has expired…", "auto-compact auth failure: aborting turn for
+ * re-auth") keeps its re-login wording. Generic compaction faults stay prefixed
+ * with "Compaction failed:". Empty/missing → "Compaction failed."
+ *
+ * This is a **notice only** — it must never open the sign-in overlay. The
+ * prompt's eventual error still goes through `recoverAuthAndResend` (one
+ * process reload) / the overlay decision on the resend.
+ */
+export function autoCompactFailedNotice(error: unknown): string {
+  const detail =
+    typeof error === "string"
+      ? error.trim()
+      : error != null
+        ? errorDetail(error).trim()
+        : "";
+  if (!detail) return "Compaction failed.";
+  // Reuse the turn-failure surface so limit / entitlement / credential share
+  // one classifier. Pass a string-shaped err so code-less rail payloads still
+  // hit the text branches.
+  const classified = promptErrorText({ data: detail });
+  // Friendly limit / entitlement notices already lead with "not a sign-in
+  // issue" — don't double-wrap them in "Compaction failed:".
+  if (classified !== detail) return classified;
+  return `Compaction failed: ${detail}`;
+}
+
+/**
+ * Note when the CLI starts its own mid-turn auth recovery (0.2.110+:
+ * `auto_recovery_started` on the `_x.ai/session_notification` rail — transparent
+ * 401 refresh + retry). The client must **not** also kill/reload the process
+ * while this is in flight; recovery is CLI-owned until it either succeeds
+ * (turn continues) or exhausts (prompt fails → our one-shot reload path).
+ */
+export function autoRecoveryStartedNote(update: unknown): string | null {
+  const u = update as { sessionUpdate?: unknown; delay_ms?: unknown } | null | undefined;
+  if (!u || u.sessionUpdate !== "auto_recovery_started") return null;
+  const delay = typeof u.delay_ms === "number" && Number.isFinite(u.delay_ms) && u.delay_ms > 0
+    ? u.delay_ms
+    : null;
+  return delay != null
+    ? `Re-authenticating (retry in ${Math.ceil(delay / 1000)}s)\u{2026}`
+    : `Re-authenticating\u{2026}`;
+}
+
+/**
+ * Note when the CLI's mid-turn auth recovery gives up (`auto_recovery_exhausted`).
+ * The in-flight prompt typically fails next; classify any attached error with
+ * the same #57/#58 surface. Null when the update isn't that kind.
+ */
+export function autoRecoveryExhaustedNote(update: unknown): string | null {
+  const u = update as { sessionUpdate?: unknown; error?: unknown } | null | undefined;
+  if (!u || u.sessionUpdate !== "auto_recovery_exhausted") return null;
+  const err = u.error;
+  if (err == null || err === "") {
+    return "Re-authentication failed \u{2014} the turn will retry or report the error.";
+  }
+  const detail = typeof err === "string" ? err.trim() : errorDetail(err).trim();
+  if (!detail) {
+    return "Re-authentication failed \u{2014} the turn will retry or report the error.";
+  }
+  const classified = promptErrorText({ data: detail });
+  return classified !== detail ? classified : `Re-authentication failed: ${detail}`;
+}
+
+/**
  * Parse the context line out of `/session-info`'s reply text — grok 0.2.x
  * renders `**Context:** 16017 / 512000 tokens (3%)`. The post-/compact donut
  * refresh prefers the live `auto_compact_completed` notification
@@ -571,10 +640,20 @@ export function isIncompatibleAgentError(err: any): boolean {
  * weekly-limit error carries the same billing-flavored wording, but routing it
  * here ends on the login screen, which can't fix a limit.
  */
+/**
+ * Credential / re-auth phrasing shared by the recovery gate and the overlay
+ * classifier. Includes the 0.2.110+ auto-compact abort copy
+ * (`auto-compact auth failure: aborting turn for re-auth`) and the
+ * "Run /login to re-authenticate" family — those used to miss the older
+ * `authenticat… failed|required` pattern and skip `recoverAuthAndResend`.
+ */
+const CREDENTIAL_ERROR_TEXT_RE =
+  /\b(401|403)\b|unauthor|forbidden|\bcredential|\bapi[_\s-]?key\b|not (?:signed|logged) ?in|(?:sign|log) ?in again|re-?login|re-?authenticat|authenticat\w*\s*(?:failed|required|error|expired)|token (?:has )?expired|expired\s+token|session (?:has )?expired|auto-compact auth failure|aborting turn for re-auth|\brun\s+\/login|\bgrok\s+login\b/i;
+
 export function isAuthErrorText(msg: unknown): boolean {
   const s = String(msg ?? "");
   if (isRateLimitErrorText(s)) return false;
-  if (/\b(401|403)\b|unauthor|forbidden|\bcredential|\bapi[_\s-]?key\b|not (?:signed|logged) ?in|(?:sign|log) ?in again|re-?login|authenticat\w*\s*(?:failed|required|error|expired)|token (?:has )?expired|expired\s+token|session (?:has )?expired/i.test(s)) return true;
+  if (CREDENTIAL_ERROR_TEXT_RE.test(s)) return true;
   // Billing/entitlement wording joins the retry gate: it CAN be a wedged token,
   // and if it isn't, the retry's failure shows the entitlement notice instead.
   return /\bpay(?:ment)?\b|\bbilling\b|\bsubscription\b|\bentitl\w+|\bunpaid\b|\bcredits?\s+(?:exhaust|remain|requir)/i.test(s);
@@ -607,7 +686,11 @@ export function isCredentialError(err: unknown): boolean {
   if (e?.code === AUTH_REQUIRED_ERROR_CODE) return true;
   const s = errorDetail(e);
   if (isRateLimitErrorText(s)) return false;
-  return /\b401\b|unauthor|\bcredential|not (?:signed|logged) ?in|(?:sign|log) ?in again|re-?login|authenticat\w*\s*(?:failed|required|error|expired)|token (?:has )?expired|expired\s+token|session (?:has )?expired|invalid\s+api[_\s-]?key|api[_\s-]?key\s+(?:is\s+)?(?:invalid|expired|revoked|missing)/i.test(s);
+  // Deliberately excludes bare 403/forbidden (entitlement/policy, not auth —
+  // see the function doc). CREDENTIAL_ERROR_TEXT_RE still matches `\b403\b`, so
+  // the credential path uses a 401-only / no-forbidden subset plus the
+  // 0.2.110+ compact-abort phrases and invalid-api-key forms.
+  return /\b401\b|unauthor|\bcredential|not (?:signed|logged) ?in|(?:sign|log) ?in again|re-?login|re-?authenticat|authenticat\w*\s*(?:failed|required|error|expired)|token (?:has )?expired|expired\s+token|session (?:has )?expired|invalid\s+api[_\s-]?key|api[_\s-]?key\s+(?:is\s+)?(?:invalid|expired|revoked|missing)|auto-compact auth failure|aborting turn for re-auth|\brun\s+\/login|\bgrok\s+login\b/i.test(s);
 }
 
 /**

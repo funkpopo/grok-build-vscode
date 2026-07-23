@@ -127,10 +127,10 @@ describe("isStdioBrokenGrokVersion (issue #22)", () => {
   });
 
   it("does not flag the supported 0.2.71+ or anything 0.2.60 and older (the fix is above the range)", () => {
-    for (const p of ["0.2.71", "0.2.72", "0.3.0", "1.0.0", "0.2.60", "0.2.59", "0.1.211"]) {
+    for (const p of ["0.2.71", "0.2.72", "0.2.111", "0.3.0", "1.0.0", "0.2.60", "0.2.59", "0.1.211"]) {
       expect(isStdioBrokenGrokVersion(`grok ${p} (x) [stable]`, "win32")).toBe(false);
     }
-    expect(GROK_STDIO_DOWNGRADE_TARGET).toBe("0.2.72");
+    expect(GROK_STDIO_DOWNGRADE_TARGET).toBe("0.2.111");
   });
 
   it("never flags non-Windows platforms (the bug is Windows-only)", () => {
@@ -157,7 +157,7 @@ describe("compareVersionTuple", () => {
 describe("grokUpdatePolicy (issue #22 update pause lifted in 0.2.71)", () => {
   it("allows updates on every platform now that the regression is fixed (no block, no pin)", () => {
     for (const plat of ["win32", "linux", "darwin"] as const) {
-      for (const v of ["0.2.60", "0.2.67", "0.2.70", "0.2.71", "0.2.72"]) {
+      for (const v of ["0.2.60", "0.2.67", "0.2.70", "0.2.71", "0.2.72", "0.2.111"]) {
         const p = grokUpdatePolicy(`grok ${v} (x) [stable]`, plat);
         expect(p.allow).toBe(true);
         expect(p.target).toBeUndefined();
@@ -173,25 +173,25 @@ describe("grokUpdatePolicy (issue #22 update pause lifted in 0.2.71)", () => {
   });
 });
 
-describe("shouldReactivelyDowngrade (issue #22 — backstop for a future build above 0.2.72)", () => {
-  it("downgrades any Windows build ABOVE the supported 0.2.72", () => {
-    for (const v of ["0.2.73", "0.2.99", "0.3.0", "1.0.0"]) {
+describe("shouldReactivelyDowngrade (issue #22 — backstop for a future build above the supported target)", () => {
+  it("downgrades any Windows build ABOVE GROK_STDIO_DOWNGRADE_TARGET", () => {
+    for (const v of ["0.2.112", "0.2.200", "0.3.0", "1.0.0"]) {
       expect(shouldReactivelyDowngrade(`grok ${v} (x) [stable]`, "win32")).toBe(true);
     }
   });
 
-  it("never downgrades 0.2.72 or below — the loop guard once the pin lands", () => {
-    // The known broken range (0.2.61–0.2.70) is handled proactively; 0.2.72 is the
-    // floor (0.2.71 was the fix, now superseded on stable), so reactive must not fire
-    // on it or anything older.
-    for (const v of ["0.2.72", "0.2.71", "0.2.70", "0.2.60", "0.1.211"]) {
+  it("never downgrades the target or below — the loop guard once the pin lands", () => {
+    // Known broken range (0.2.61–0.2.70) is proactive; target is the floor. Builds
+    // between the historical fix (0.2.71) and the current target stay put so a
+    // transient startup failure cannot yank a working 0.2.72–0.2.111 user down.
+    for (const v of ["0.2.111", "0.2.110", "0.2.72", "0.2.71", "0.2.70", "0.2.60", "0.1.211"]) {
       expect(shouldReactivelyDowngrade(`grok ${v} (x) [stable]`, "win32")).toBe(false);
     }
   });
 
   it("is Windows-only", () => {
     for (const plat of ["linux", "darwin"] as const) {
-      expect(shouldReactivelyDowngrade("grok 0.2.99 (x) [stable]", plat)).toBe(false);
+      expect(shouldReactivelyDowngrade("grok 0.2.200 (x) [stable]", plat)).toBe(false);
     }
   });
 
