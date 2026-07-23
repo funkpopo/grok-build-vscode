@@ -1,7 +1,12 @@
 import { describe, it, expect } from "vitest";
 import {
+  configCombineQueuedPrompts,
   configForcesAlwaysApprove,
+  configMediaGenEnabled,
+  detectAuthMethod,
   isAlwaysApprovePermission,
+  parseFeatureEnv,
+  readTomlTableBool,
   readUiPermissionMode,
 } from "../src/grok-config";
 
@@ -114,5 +119,78 @@ describe("configForcesAlwaysApprove", () => {
     expect(
       configForcesAlwaysApprove({ project: projectWithoutKey, global: CONFIG("always-approve") }),
     ).toBe(true);
+  });
+});
+
+describe("configCombineQueuedPrompts", () => {
+  it("defaults to true when unset", () => {
+    expect(configCombineQueuedPrompts({})).toBe(true);
+    expect(configCombineQueuedPrompts({ global: `[ui]\nyolo = false\n` })).toBe(true);
+  });
+
+  it("reads [ui] combine_queued_prompts", () => {
+    expect(
+      configCombineQueuedPrompts({ global: `[ui]\ncombine_queued_prompts = false\n` }),
+    ).toBe(false);
+    expect(
+      configCombineQueuedPrompts({ global: `[ui]\ncombine_queued_prompts = true\n` }),
+    ).toBe(true);
+  });
+
+  it("project overrides global", () => {
+    expect(
+      configCombineQueuedPrompts({
+        project: `[ui]\ncombine_queued_prompts = false\n`,
+        global: `[ui]\ncombine_queued_prompts = true\n`,
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("configMediaGenEnabled", () => {
+  it("defaults both on", () => {
+    expect(configMediaGenEnabled({})).toEqual({ image: true, video: true });
+  });
+
+  it("reads [features] image_gen / video_gen", () => {
+    const toml = `[features]\nimage_gen = false\nvideo_gen = false\n`;
+    expect(configMediaGenEnabled({ global: toml })).toEqual({ image: false, video: false });
+  });
+
+  it("env overrides config (GROK_IMAGE_GEN / GROK_VIDEO_GEN)", () => {
+    expect(
+      configMediaGenEnabled({
+        global: `[features]\nimage_gen = true\nvideo_gen = true\n`,
+        env: { GROK_IMAGE_GEN: "0", GROK_VIDEO_GEN: "false" },
+      }),
+    ).toEqual({ image: false, video: false });
+  });
+
+  it("parseFeatureEnv accepts common truthy/falsey spellings", () => {
+    expect(parseFeatureEnv("1")).toBe(true);
+    expect(parseFeatureEnv("TRUE")).toBe(true);
+    expect(parseFeatureEnv("0")).toBe(false);
+    expect(parseFeatureEnv("no")).toBe(false);
+    expect(parseFeatureEnv("")).toBeUndefined();
+    expect(parseFeatureEnv(undefined)).toBeUndefined();
+  });
+
+  it("readTomlTableBool ignores other tables", () => {
+    expect(readTomlTableBool(`[other]\nimage_gen = false\n`, "features", "image_gen")).toBeUndefined();
+  });
+});
+
+describe("detectAuthMethod", () => {
+  it("prefers OAuth when auth.json exists", () => {
+    expect(detectAuthMethod({ authJsonExists: true, xaiApiKey: true }).method).toBe("oauth");
+  });
+  it("falls back to API key when only a key is present", () => {
+    expect(detectAuthMethod({ authJsonExists: false, xaiApiKey: true })).toMatchObject({
+      method: "api-key",
+      manageUrl: "https://console.x.ai",
+    });
+  });
+  it("unknown when neither is present", () => {
+    expect(detectAuthMethod({}).method).toBe("unknown");
   });
 });

@@ -141,7 +141,17 @@ export type HostMsg =
   // Session-cumulative billing (#53), summed by the host across the session's
   // turns. `turn` is the last prompt's own usage. Both omitted when the CLI sent
   // no `_meta.usage` — the popover then shows only the context row, never zeros.
-  | { type: "usage"; turn?: PromptUsage; session?: PromptUsage };
+  // Cost (`costUsd`) rides the same objects when the server stamped a complete
+  // bill (API-key paths; OAuth/pool often omit — absence ≠ free).
+  | { type: "usage"; turn?: PromptUsage; session?: PromptUsage }
+  // Active auth method for the gear / session UI (0.2.111 `/session-info` or a
+  // best-effort local detection). `manageUrl` is the billing/console link.
+  | {
+      type: "authMethod";
+      method: string;
+      label: string;
+      manageUrl?: string;
+    };
 
 /** webview -> host */
 export type WebviewMsg =
@@ -225,7 +235,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   sessionContext: true, clearMessages: true, onboarding: true, error: true,
   xaiNotification: true, subagentUpdate: true, commandOutput: true, expandCommandOutputs: true, steerByDefault: true,
   focusInput: true, sessions: true, sessionDot: true, queuedSends: true,
-  steerUnavailable: true, usage: true,
+  steerUnavailable: true, usage: true, authMethod: true,
 };
 
 const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {

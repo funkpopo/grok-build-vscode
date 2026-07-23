@@ -34,9 +34,10 @@ describe("AcpClient.request timer lifecycle", () => {
   });
 });
 
-// #3/#4 (thanks @shugav for the crash report): the startup crash was the bogus
-// `max` value, not reasoningEffort itself — grok accepts none|minimal|low|medium|
-// high|xhigh, and the flag must precede the `stdio` subcommand.
+// Reasoning effort is an agent-level flag and must precede `stdio`. As of
+// 0.2.109 the set includes `max` when the model menu advertises it; the picker
+// only offers advertised levels, so buildGrokAgentArgs forwards whatever the
+// user picked (incl. max).
 describe("buildGrokAgentArgs", () => {
   it("starts ACP sessions with the stdio subcommand when no effort is set", () => {
     expect(buildGrokAgentArgs()).toEqual(["agent", "stdio"]);
@@ -46,5 +47,6 @@ describe("buildGrokAgentArgs", () => {
     expect(buildGrokAgentArgs("high")).toEqual(["agent", "--reasoning-effort", "high", "stdio"]);
     expect(buildGrokAgentArgs("none")).toEqual(["agent", "--reasoning-effort", "none", "stdio"]);
     expect(buildGrokAgentArgs("xhigh")).toEqual(["agent", "--reasoning-effort", "xhigh", "stdio"]);
+    expect(buildGrokAgentArgs("max")).toEqual(["agent", "--reasoning-effort", "max", "stdio"]);
   });
 });

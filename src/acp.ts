@@ -4,6 +4,7 @@ import { EventEmitter } from "node:events";
 import {
   collectToolImages,
   extractGeneratedMediaPaths,
+  extractSessionUsageResult,
   isMediaGenToolCall,
   extractPromptMeta,
   isMethodNotFoundError,
@@ -28,9 +29,19 @@ import {
   shouldBlockWrite,
 } from "./plan-gate";
 import { resolveGrokHome } from "./sessions";
-import { filterAdvertisedCommands } from "./slash-filter";
+import { filterAdvertisedCommands, type FilterAdvertisedOptions } from "./slash-filter";
 
-export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+/** Reasoning-effort levels. The wire set is model-advertised (`reasoningEfforts`);
+ *  `max` is valid on 0.2.109+ when the model menu includes it. */
+export type EffortLevel =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | (string & {});
 
 export type PromptContentBlock =
   | { type: "text"; text: string }
@@ -42,6 +53,8 @@ export interface AcpClientOptions {
   effort?: EffortLevel;
   env?: NodeJS.ProcessEnv;
   log: (msg: string) => void;
+  /** Hide media slash commands when the matching feature flag is off (0.2.111). */
+  mediaFilter?: FilterAdvertisedOptions;
 }
 
 export interface ModelInfo {
@@ -132,9 +145,9 @@ type Pending = { resolve: (v: any) => void; reject: (e: any) => void; timer?: Re
 
 export function buildGrokAgentArgs(effort?: EffortLevel): string[] {
   // `--reasoning-effort` is an `agent`-level flag, so it must precede the `stdio`
-  // subcommand (after `stdio` the CLI errors "unexpected argument"). Only the
-  // values grok actually accepts are offered (none|minimal|low|medium|high|xhigh);
-  // the bogus `max` we used to expose made grok exit with code 2 (see #3/#4).
+  // subcommand (after `stdio` the CLI errors "unexpected argument"). The value
+  // set is model-advertised (incl. `max` on 0.2.109+); the picker only offers
+  // levels from `models[]._meta.reasoningEfforts`.
   return effort ? ["agent", "--reasoning-effort", effort, "stdio"] : ["agent", "stdio"];
 }
 
@@ -398,6 +411,28 @@ export class AcpClient extends EventEmitter {
     return !!res?._meta?.model?.Ok;
   }
 
+  /**
+   * Session-cumulative usage via `_x.ai/session/usage` (0.2.109+). Returns
+   * undefined on older CLIs (-32601) or empty payloads — never invents zeros for
+   * the popover. Cost fields ride the same object when the server stamps them.
+   */
+  async getSessionUsage(): Promise<PromptUsage | undefined> {
+    if (!this.sessionId) return undefined;
+    try {
+      const res = await this.request("_x.ai/session/usage", { sessionId: this.sessionId });
+      return extractSessionUsageResult(res);
+    } catch (e) {
+      if (isMethodNotFoundError(e)) return undefined;
+      throw e;
+    }
+  }
+
+  /** Effort levels the CURRENT model advertises (empty when the model has none). */
+  currentModelReasoningEfforts(): string[] {
+    const m = this.availableModels.find((x) => x.modelId === this.currentModelId);
+    return Array.isArray(m?.reasoningEfforts) ? [...m!.reasoningEfforts!] : [];
+  }
+
   async setMode(modeId: string): Promise<void> {
     if (!this.sessionId) throw new Error("no session");
     await this.request("session/set_mode", {
@@ -648,7 +683,7 @@ export class AcpClient extends EventEmitter {
     if (r.event === "commandsUpdate") {
       // Hide config-mutating no-op commands (`/always-approve`) from both the
       // autocomplete and the dispatch gate at the single ingestion point (#31).
-      this.availableCommands = filterAdvertisedCommands(r.commands);
+      this.availableCommands = filterAdvertisedCommands(r.commands, this.opts.mediaFilter);
       this.emit("commandsUpdate", this.availableCommands);
       return;
     }

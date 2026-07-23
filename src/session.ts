@@ -193,16 +193,28 @@ export class Session {
   buffer: HostMsg[] = [];
 
   /**
-   * The ONE pending message composed while THIS session was busy (typed
-   * Enter-sends and dictated utterances), awaiting its turn end. Invariant:
-   * length ≤ 1 — composing more while one is queued appends to the entry
-   * (blank-line separator, the exact flush format), because Stop and the flush
-   * collapse everything into one message anyway. Host-owned per session — the
-   * webview renders a mirror (a pending user block) from `queuedSends`
+   * Pending messages composed while THIS session was busy (typed Enter-sends
+   * and dictated utterances), awaiting turn end. When `combineQueuedPrompts` is
+   * true (default, `[ui] combine_queued_prompts`), composing more APPENDS into
+   * a single entry (blank-line separator) and flush is one turn. When false,
+   * each compose is its own entry and flush drains them one turn at a time.
+   * Host-owned per session — the webview renders a mirror from `queuedSends`
    * snapshots, so it survives focus switches and the flush
    * (maybeFlushQueuedSends) fires even while the session is backgrounded.
    */
   queuedSends: string[] = [];
+
+  /**
+   * Mirror of grok's `[ui] combine_queued_prompts` (default true). Read at
+   * session start from config.toml; drives queue append vs multi-entry flush.
+   */
+  combineQueuedPrompts = true;
+
+  /**
+   * Image/video gen enable flags (0.2.111 config/env). Soft-block `/imagine*`
+   * when the matching flag is off; also used to hide them from autocomplete.
+   */
+  mediaGen = { image: true, video: true };
 
   /** The last completed prompt's billing usage (#53) — grok's `_meta.usage`. */
   lastTurnUsage?: PromptUsage;

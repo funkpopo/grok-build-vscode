@@ -14,9 +14,46 @@ export interface SlashCmd {
  */
 export const HIDDEN_SLASH_COMMANDS: ReadonlySet<string> = new Set(["always-approve", "context"]);
 
+/** Slash names for image generation (hidden when `[features] image_gen` is off). */
+export const IMAGE_GEN_SLASH_COMMANDS: ReadonlySet<string> = new Set([
+  "imagine",
+  "imagine-edit",
+]);
+
+/** Slash names for video generation (hidden when `[features] video_gen` is off). */
+export const VIDEO_GEN_SLASH_COMMANDS: ReadonlySet<string> = new Set([
+  "imagine-video",
+]);
+
+export interface FilterAdvertisedOptions {
+  /** When false, drop `/imagine` (+ edit alias). Default: keep. */
+  imageGen?: boolean;
+  /** When false, drop `/imagine-video`. Default: keep. */
+  videoGen?: boolean;
+}
+
 /** Drop hidden commands from an advertised `available_commands_update` list. */
-export function filterAdvertisedCommands<T extends { name: string }>(commands: T[]): T[] {
-  return commands.filter((c) => !HIDDEN_SLASH_COMMANDS.has(c.name));
+export function filterAdvertisedCommands<T extends { name: string }>(
+  commands: T[],
+  opts?: FilterAdvertisedOptions,
+): T[] {
+  return commands.filter((c) => {
+    if (HIDDEN_SLASH_COMMANDS.has(c.name)) return false;
+    if (opts?.imageGen === false && IMAGE_GEN_SLASH_COMMANDS.has(c.name)) return false;
+    if (opts?.videoGen === false && VIDEO_GEN_SLASH_COMMANDS.has(c.name)) return false;
+    return true;
+  });
+}
+
+/** True when a leading slash command is a media-gen tool that's currently disabled. */
+export function isDisabledMediaSlash(
+  command: string | null | undefined,
+  flags: { image: boolean; video: boolean },
+): boolean {
+  if (!command) return false;
+  if (!flags.image && IMAGE_GEN_SLASH_COMMANDS.has(command)) return true;
+  if (!flags.video && VIDEO_GEN_SLASH_COMMANDS.has(command)) return true;
+  return false;
 }
 
 /**

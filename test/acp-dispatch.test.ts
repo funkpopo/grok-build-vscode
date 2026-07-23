@@ -10,8 +10,10 @@ import {
   isSubagentLifecycleUpdate,
   extractGeneratedMediaPaths,
   extractImageContent,
+  extractCostFields,
   extractPromptMeta,
   extractPromptUsage,
+  extractSessionUsageResult,
   gateZeroTokenMeta,
   isMediaGenToolCall,
   isIncompatibleAgentError,
@@ -34,6 +36,7 @@ import {
   makeQuestionResponse,
   makeRequest,
   parseAcpLine,
+  parseSessionInfoAuth,
   parseSessionInfoContext,
   permissionOutcomeFor,
   resolveModelId,
@@ -1118,6 +1121,89 @@ describe("usageIsRealMeasurement (#53)", () => {
   });
   it("accepts a real inference turn", () => {
     expect(usageIsRealMeasurement({ totalTokens: 16371, usage: { inputTokens: 9 } })).toBe(true);
+  });
+});
+
+describe("extractCostFields / session usage cost (P1)", () => {
+  it("pulls total_cost_usd / costUSD / ticks from a headless-shaped usage object", () => {
+    expect(
+      extractCostFields({
+        inputTokens: 100,
+        costUSD: 0.01268905,
+        total_cost_usd_ticks: 126890500,
+      }),
+    ).toEqual({ costUsd: 0.01268905, costUsdTicks: 126890500 });
+    expect(extractCostFields({ total_cost_usd: 0.05 })).toEqual({ costUsd: 0.05 });
+  });
+
+  it("sums modelUsage.*.costUSD when the top-level total is absent", () => {
+    expect(
+      extractCostFields({
+        modelUsage: {
+          a: { costUSD: 0.01 },
+          b: { costUSD: 0.02 },
+        },
+      }),
+    ).toEqual({ costUsd: 0.03 });
+  });
+
+  it("never invents a cost from empty usage", () => {
+    expect(extractCostFields({})).toEqual({});
+    expect(extractCostFields({ inputTokens: 9 })).toEqual({});
+    expect(extractCostFields(undefined)).toEqual({});
+  });
+
+  it("extractPromptUsage carries cost through", () => {
+    expect(
+      extractPromptUsage({
+        usage: { inputTokens: 10, costUSD: 0.001, total_cost_usd_ticks: 10_000_000 },
+      }),
+    ).toEqual({ inputTokens: 10, costUsd: 0.001, costUsdTicks: 10_000_000 });
+  });
+
+  it("extractSessionUsageResult reads { usage } from _x.ai/session/usage", () => {
+    expect(
+      extractSessionUsageResult({
+        usage: { inputTokens: 11136, outputTokens: 29, costUSD: 0.004 },
+      }),
+    ).toEqual({ inputTokens: 11136, outputTokens: 29, costUsd: 0.004 });
+    expect(extractSessionUsageResult({})).toBeUndefined();
+    expect(extractSessionUsageResult(undefined)).toBeUndefined();
+  });
+
+  it("addUsage sums cost fields without inventing zeros", () => {
+    expect(addUsage({ costUsd: 0.01 }, { costUsd: 0.02 })!.costUsd).toBeCloseTo(0.03);
+    const one = addUsage({ inputTokens: 5 }, { costUsd: 0.01 })!;
+    expect(one.inputTokens).toBe(5);
+    expect(one.costUsd).toBe(0.01);
+  });
+});
+
+describe("parseSessionInfoAuth (0.2.111)", () => {
+  it("parses OAuth + billing URL", () => {
+    const text = `**Auth method:** OAuth\nManage account and credits: https://grok.com/?_s=billing\n`;
+    expect(parseSessionInfoAuth(text)).toEqual({
+      method: "oauth",
+      label: "OAuth",
+      manageUrl: "https://grok.com/?_s=billing",
+    });
+  });
+
+  it("parses API key variants", () => {
+    expect(parseSessionInfoAuth("Auth method: API key")).toEqual({
+      method: "api-key",
+      label: "API key",
+    });
+    expect(parseSessionInfoAuth("Auth method: API key (XAI_API_KEY)\nManage account and credits: https://console.x.ai")).toEqual({
+      method: "api-key",
+      label: "API key (XAI_API_KEY)",
+      manageUrl: "https://console.x.ai",
+    });
+  });
+
+  it("returns null when the line is absent", () => {
+    expect(parseSessionInfoAuth("**Model:** grok-build")).toBeNull();
+    expect(parseSessionInfoAuth("")).toBeNull();
   });
 });
 

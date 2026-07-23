@@ -23,7 +23,7 @@
     "permissionResolved", "exitPlanRequest", "planResolved", "questionRequest", "planNotice", "autoCompactNotice", "planBlocked",
     "promptComplete", "contextUsage", "commandOutput", "expandCommandOutputs", "focusInput", "agentReset", "agentError", "agentEnd", "exit", "setBusy", "summarizing",
     "sessionContext", "clearMessages", "onboarding", "error", "xaiNotification", "subagentUpdate", "sessions",
-    "sessionDot", "queuedSends", "steerUnavailable", "usage", "steerByDefault",
+    "sessionDot", "queuedSends", "steerUnavailable", "usage", "authMethod", "steerByDefault",
   ];
   const WEBVIEW_MESSAGE_TYPES = [
     "ready", "send", "newSession", "cancel", "pickModel", "setMode", "removeChip",

@@ -268,6 +268,14 @@ export interface PromptUsage {
   modelCalls?: number;
   apiDurationMs?: number;
   numTurns?: number;
+  /**
+   * Dollar cost for the prompt/session when the server stamped a complete bill
+   * (API-key paths today; OAuth/pool often omit — absence means unreported, never free).
+   * Accepts both headless `total_cost_usd` / `costUSD` and camelCase ACP spellings.
+   */
+  costUsd?: number;
+  /** Exact integer ticks (1 USD = 10^10 ticks) when the server provides them. */
+  costUsdTicks?: number;
 }
 
 export interface PromptResultMeta {
@@ -280,24 +288,79 @@ export interface PromptResultMeta {
   usage?: PromptUsage;
 }
 
+/** Finite number from a wire field, or undefined (never invents 0). */
+function numField(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+/**
+ * Pull dollar cost from a usage-shaped object. The server only stamps a complete
+ * cost (headless docs: when partial, ALL cost floats are omitted). Accepts:
+ *   - top-level `costUSD` / `costUsd` / `total_cost_usd` / `totalCostUsd`
+ *   - `total_cost_usd_ticks` / `costUsdTicks`
+ *   - sum of `modelUsage.*.costUSD` when the top-level total is absent
+ * Never fabricates a 0 from missing fields.
+ */
+export function extractCostFields(u: any): { costUsd?: number; costUsdTicks?: number } {
+  if (!u || typeof u !== "object") return {};
+  let costUsd =
+    numField(u.costUSD) ??
+    numField(u.costUsd) ??
+    numField(u.total_cost_usd) ??
+    numField(u.totalCostUsd);
+  const costUsdTicks =
+    numField(u.total_cost_usd_ticks) ??
+    numField(u.costUsdTicks) ??
+    numField(u.totalCostUsdTicks);
+  if (costUsd === undefined && u.modelUsage && typeof u.modelUsage === "object") {
+    let sum = 0;
+    let any = false;
+    for (const row of Object.values(u.modelUsage as Record<string, any>)) {
+      const c = numField(row?.costUSD) ?? numField(row?.costUsd);
+      if (c !== undefined) {
+        sum += c;
+        any = true;
+      }
+    }
+    if (any) costUsd = sum;
+  }
+  const out: { costUsd?: number; costUsdTicks?: number } = {};
+  if (costUsd !== undefined) out.costUsd = costUsd;
+  if (costUsdTicks !== undefined) out.costUsdTicks = costUsdTicks;
+  return out;
+}
+
 /** Pull the nested `_meta.usage` (see `PromptUsage`). Returns undefined when the
  *  CLI didn't send one — an older build, or a turn that ran no inference — so a
  *  caller can tell "no data" from "zero", and never invents fields. */
 export function extractPromptUsage(meta: any): PromptUsage | undefined {
   const u = meta?.usage;
   if (!u || typeof u !== "object") return undefined;
-  const num = (v: any) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const cost = extractCostFields(u);
   const out: PromptUsage = {
-    inputTokens: num(u.inputTokens),
-    outputTokens: num(u.outputTokens),
-    totalTokens: num(u.totalTokens),
-    cachedReadTokens: num(u.cachedReadTokens),
-    reasoningTokens: num(u.reasoningTokens),
-    modelCalls: num(u.modelCalls),
-    apiDurationMs: num(u.apiDurationMs),
-    numTurns: num(u.numTurns),
+    inputTokens: numField(u.inputTokens),
+    outputTokens: numField(u.outputTokens),
+    totalTokens: numField(u.totalTokens),
+    cachedReadTokens: numField(u.cachedReadTokens),
+    reasoningTokens: numField(u.reasoningTokens),
+    modelCalls: numField(u.modelCalls),
+    apiDurationMs: numField(u.apiDurationMs),
+    numTurns: numField(u.numTurns),
+    ...cost,
   };
   return Object.values(out).some((v) => v !== undefined) ? out : undefined;
+}
+
+/**
+ * Pull usage from `_x.ai/session/usage`'s `{ usage }` response (0.2.109+).
+ * Same shape as nested `_meta.usage` — session-cumulative tokens (+ cost when
+ * the server stamped one). Undefined when the payload is empty/missing.
+ */
+export function extractSessionUsageResult(result: any): PromptUsage | undefined {
+  if (!result || typeof result !== "object") return undefined;
+  // Accept both `{ usage: {...} }` and a bare usage object.
+  const u = result.usage && typeof result.usage === "object" ? result.usage : result;
+  return extractPromptUsage({ usage: u });
 }
 
 export function extractPromptMeta(result: any): PromptResultMeta {
@@ -329,6 +392,7 @@ export function addUsage(a: PromptUsage | undefined, b: PromptUsage | undefined)
   const keys: (keyof PromptUsage)[] = [
     "inputTokens", "outputTokens", "totalTokens", "cachedReadTokens",
     "reasoningTokens", "modelCalls", "apiDurationMs", "numTurns",
+    "costUsd", "costUsdTicks",
   ];
   const out: PromptUsage = {};
   for (const k of keys) {
@@ -531,6 +595,37 @@ export function parseSessionInfoContext(text: string): { used: number; window: n
   const window = num(m[2]);
   if (!Number.isFinite(used) || used <= 0 || !Number.isFinite(window) || window <= 0) return null;
   return { used, window };
+}
+
+/**
+ * Auth method (+ optional manage-credits URL) from `/session-info` prose
+ * (0.2.111+). Wire samples from the CLI binary:
+ *   - `Auth method: OAuth` + `Manage account and credits: https://grok.com/?_s=billing`
+ *   - `Auth method: API key` / `Auth method: API key (XAI_API_KEY)` + console.x.ai
+ * Returns null when the line is absent (older CLI, or a reply that omitted it).
+ */
+export function parseSessionInfoAuth(text: string): {
+  method: "oauth" | "api-key" | string;
+  label: string;
+  manageUrl?: string;
+} | null {
+  const m = /auth\s*method:\*{0,2}\s*([^\n*]+)/i.exec(text ?? "");
+  if (!m) return null;
+  const raw = m[1].replace(/\*+/g, "").trim();
+  if (!raw) return null;
+  const lower = raw.toLowerCase();
+  const method: "oauth" | "api-key" | string =
+    lower.startsWith("oauth") ? "oauth"
+      : lower.includes("api key") || lower.includes("api-key") ? "api-key"
+        : raw;
+  const label =
+    method === "oauth" ? "OAuth"
+      : method === "api-key"
+        ? (/\(xai_api_key\)/i.test(raw) ? "API key (XAI_API_KEY)" : "API key")
+        : raw;
+  const urlM = /manage\s+account\s+and\s+credits:\s*(https?:\/\/\S+)/i.exec(text ?? "");
+  const manageUrl = urlM ? urlM[1].replace(/[).,;]+$/, "") : undefined;
+  return manageUrl ? { method, label, manageUrl } : { method, label };
 }
 
 export function makePermissionResponse(id: number | string, optionId: string) {

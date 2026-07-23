@@ -11,7 +11,7 @@ import { resolveVoiceKey, extractGrokAuthKey, parseVoiceCommand, DEFAULT_SEND_PH
 import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voice-recorder";
 import { VoiceStreamer } from "./voice-streamer";
 import type { PromptResultMeta } from "./acp-dispatch";
-import { MediaRef, addUsage, autoCompactFailedNotice, autoCompactStartedNote, autoRecoveryExhaustedNote, autoRecoveryStartedNote, contextUsedFromCompactNotification, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, parseSessionInfoContext, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, summarizeBackgroundCommand, usageIsRealMeasurement } from "./acp-dispatch";
+import { MediaRef, addUsage, autoCompactFailedNotice, autoCompactStartedNote, autoRecoveryExhaustedNote, autoRecoveryStartedNote, contextUsedFromCompactNotification, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, parseSessionInfoAuth, parseSessionInfoContext, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, summarizeBackgroundCommand, usageIsRealMeasurement } from "./acp-dispatch";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
 import { GROK_VIEW_ID, moveViewContainerFor } from "./view-move";
 import {
@@ -53,9 +53,14 @@ import {
   toggleChip,
 } from "./chips";
 import { buildPromptWithImages, type PromptImageInput } from "./prompt-builder";
-import { matchSlashCommand } from "./slash-filter";
+import { isDisabledMediaSlash, matchSlashCommand } from "./slash-filter";
 import { MENTION_INDEX_LIMIT, MENTION_INDEX_TTL_MS, buildExcludeGlob, filterMentionFiles, normalizeRelPath, orderMentionIndex } from "./mention";
-import { configForcesAlwaysApprove } from "./grok-config";
+import {
+  configCombineQueuedPrompts,
+  configForcesAlwaysApprove,
+  configMediaGenEnabled,
+  detectAuthMethod,
+} from "./grok-config";
 import { fileUriToPath, parseFileRef, shouldReadFileInline } from "./file-ref";
 import { pickRejectOption, shouldRejectPermission } from "./plan-gate";
 import { appendPlanEntry, countsAsUserBubble, decideRestoreState } from "./plan-restore";
@@ -506,11 +511,8 @@ See design doc for the full state machine diagram.`;
     this.post({ type: "modeChanged", modeId: this.displayMode() });
   }
 
-  /** Whether grok's config.toml forces always-approve (#31). Project
-   *  `.grok/config.toml` overrides global `~/.grok/config.toml`. Read fresh on
-   *  each session start — it's a couple of small file reads, and the user may
-   *  edit the config between sessions. Any read error → false (treat as normal). */
-  private configForcesAutoApprove(): boolean {
+  /** Project + global config.toml texts (or undefined when missing/unreadable). */
+  private readGrokConfigPair(): { project?: string; global?: string } {
     const readSafe = (p?: string): string | undefined => {
       if (!p) return undefined;
       try {
@@ -523,7 +525,42 @@ See design doc for the full state machine diagram.`;
     const globalPath = home ? path.join(home, ".grok", "config.toml") : undefined;
     const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     const projectPath = cwd ? path.join(cwd, ".grok", "config.toml") : undefined;
-    return configForcesAlwaysApprove({ project: readSafe(projectPath), global: readSafe(globalPath) });
+    return { project: readSafe(projectPath), global: readSafe(globalPath) };
+  }
+
+  /** Whether grok's config.toml forces always-approve (#31). Project
+   *  `.grok/config.toml` overrides global `~/.grok/config.toml`. Read fresh on
+   *  each session start — it's a couple of small file reads, and the user may
+   *  edit the config between sessions. Any read error → false (treat as normal). */
+  private configForcesAutoApprove(): boolean {
+    return configForcesAlwaysApprove(this.readGrokConfigPair());
+  }
+
+  private readCombineQueuedPrompts(): boolean {
+    return configCombineQueuedPrompts(this.readGrokConfigPair());
+  }
+
+  private readMediaGenFlags(): { image: boolean; video: boolean } {
+    return configMediaGenEnabled({ ...this.readGrokConfigPair(), env: process.env });
+  }
+
+  /** Best-effort auth method for the gear UI (upgraded when /session-info is scraped). */
+  private detectAndPostAuthMethod(session: Session): void {
+    const home = resolveGrokHome(process.env);
+    let authJsonExists = false;
+    try {
+      authJsonExists = fs.existsSync(path.join(home, "auth.json"));
+    } catch {
+      authJsonExists = false;
+    }
+    const xaiApiKey = !!(process.env.XAI_API_KEY || process.env.GROK_API_KEY);
+    const info = detectAuthMethod({ authJsonExists, xaiApiKey });
+    this.emit(session, {
+      type: "authMethod",
+      method: info.method,
+      label: info.label,
+      manageUrl: info.manageUrl,
+    });
   }
 
   private alwaysApproveNoticeShown = false;
@@ -895,10 +932,17 @@ See design doc for the full state machine diagram.`;
     if (!session.queuedSends.length) return;
     if (!session.client || session.priming || session.afterTurn) return;
     if (session.status === "working" || session.status === "needs-you") return;
-    const combined = session.queuedSends.join("\n\n");
-    session.queuedSends = [];
-    this.emit(session, { type: "queuedSends", items: [] });
-    await this.handleSend(combined, false, session);
+    // combine ON (default): one turn from every pending entry (blank-line join).
+    // combine OFF: drain the head only; the next agentEnd re-enters this path.
+    let text: string;
+    if (session.combineQueuedPrompts || session.queuedSends.length === 1) {
+      text = session.queuedSends.join("\n\n");
+      session.queuedSends = [];
+    } else {
+      text = session.queuedSends.shift()!;
+    }
+    this.emit(session, { type: "queuedSends", items: [...session.queuedSends] });
+    await this.handleSend(text, false, session);
   }
 
   /**
@@ -929,7 +973,11 @@ See design doc for the full state machine diagram.`;
         // which is exactly the behavior Steer was offering to skip.
         this.emit(session, { type: "steerUnavailable" });
         this.emit(session, { type: "agentReset" });
-        session.queuedSends.length ? (session.queuedSends[0] += "\n\n" + body) : session.queuedSends.push(body);
+        if (session.combineQueuedPrompts && session.queuedSends.length) {
+          session.queuedSends[0] += "\n\n" + body;
+        } else {
+          session.queuedSends.push(body);
+        }
         this.emit(session, { type: "queuedSends", items: [...session.queuedSends] });
         void vscode.window.showWarningMessage(
           "Steering needs a newer Grok Build CLI — your message was queued instead. Update via the gear menu → Version & about.",
@@ -1583,11 +1631,18 @@ See design doc for the full state machine diagram.`;
     const env = this.buildEnv(cwd);
     const effortStr = cfg.get<string>("defaultEffort", "");
     const effort = effortStr ? (effortStr as EffortLevel) : undefined;
+    // Config-driven session knobs (read fresh — user may edit config.toml between sessions).
+    session.combineQueuedPrompts = this.readCombineQueuedPrompts();
+    session.mediaGen = this.readMediaGenFlags();
     const client = new AcpClient({
       cliPath,
       cwd,
       env,
       effort,
+      mediaFilter: {
+        imageGen: session.mediaGen.image,
+        videoGen: session.mediaGen.video,
+      },
       log: (msg) => this.output.appendLine(msg),
     });
     session.client = client;
@@ -2053,6 +2108,9 @@ See design doc for the full state machine diagram.`;
       this.touch(session);
       this.reapPool(); // enforce the LRU cap now that the pool grew
       this.emit(session, { type: "setBusy", value: false });
+      // Auth method for the gear UI (0.2.111). Best-effort from disk/env; upgraded
+      // when a later /session-info scrape sees the prose line.
+      this.detectAndPostAuthMethod(session);
       // After the eager primer acks, fire anything type-ahead-queued during the
       // startup window (#37). ensurePrimed never throws.
       void this.ensurePrimed(client, session, gen).then(() => {
@@ -2129,15 +2187,17 @@ See design doc for the full state machine diagram.`;
       case "queueSend": {
         // Host-owned per-session queue (#37): the webview renders a mirror from
         // the queuedSends snapshots, so queued messages survive focus switches
-        // and flush even while their session is backgrounded. A SINGLE pending
-        // message is kept — composing more while one is queued APPENDS to it
-        // (blank-line separator, the exact flush format). Separate entries were
-        // a fiction: Stop and the flush both collapse them anyway, and per-entry
-        // editing broke ordering (an edited entry re-queued at the end).
+        // and flush even while their session is backgrounded. When
+        // `combineQueuedPrompts` is on (default / `[ui] combine_queued_prompts`),
+        // composing more APPENDS into one entry (blank-line separator). When off,
+        // each compose is its own entry and flush drains one turn at a time.
         const s = this.focused;
         if (typeof msg.text === "string" && msg.text.trim()) {
-          if (s.queuedSends.length) s.queuedSends[0] += "\n\n" + msg.text;
-          else s.queuedSends.push(msg.text);
+          if (s.combineQueuedPrompts && s.queuedSends.length) {
+            s.queuedSends[0] += "\n\n" + msg.text;
+          } else {
+            s.queuedSends.push(msg.text);
+          }
           this.emit(s, { type: "queuedSends", items: [...s.queuedSends] });
           // If the turn ended while this message was in flight, fire it now.
           void this.maybeFlushQueuedSends(s);
@@ -3522,10 +3582,27 @@ See design doc for the full state machine diagram.`;
     // it (a /compact that *grew* the context 6x in testing — see
     // research/compact.md). Confirmed commands flip the prompt order so the
     // command keeps position 0 and the context trails it.
-    const slashCommand = matchSlashCommand(
-      text,
-      client.availableCommands.map((c) => c.name),
-    );
+    // matchSlashCommand against the FULL advertised set (incl. hidden media
+    // commands) so a typed `/imagine` still resolves when the feature is off —
+    // we soft-block below instead of letting it reach the model as prose.
+    const allCmdNames = [
+      ...client.availableCommands.map((c) => c.name),
+      ...(!session.mediaGen.image ? ["imagine", "imagine-edit"] : []),
+      ...(!session.mediaGen.video ? ["imagine-video"] : []),
+    ];
+    const slashCommand = matchSlashCommand(text, allCmdNames);
+    if (isDisabledMediaSlash(slashCommand, session.mediaGen)) {
+      const which = slashCommand?.includes("video") ? "video" : "image";
+      this.emit(session, {
+        type: "agentError",
+        text: `${which === "video" ? "Video" : "Image"} generation is disabled in your Grok config (` +
+          (which === "video"
+            ? "`[features] video_gen = false` / `GROK_VIDEO_GEN=0`"
+            : "`[features] image_gen = false` / `GROK_IMAGE_GEN=0`") +
+          "). Re-enable it there, then start a new session.",
+      });
+      return;
+    }
 
     const { blocks: promptBlocks } = buildPromptWithImages(
       text,
@@ -4111,6 +4188,13 @@ See design doc for the full state machine diagram.`;
     session.lastTurnUsage = meta.usage;
     session.sessionUsage = addUsage(session.sessionUsage, meta.usage);
     this.emit(session, { type: "usage", turn: session.lastTurnUsage, session: session.sessionUsage });
+    this.persistSessionUsage(session);
+    // Prefer the CLI's session-cumulative `_x.ai/session/usage` when available
+    // (0.2.109+) — it can carry cost the per-turn meta still omits on some paths.
+    void this.refreshSessionUsageFromCli(session);
+  }
+
+  private persistSessionUsage(session: Session): void {
     const id = session.activeSessionId;
     if (!id || !session.sessionUsage) return;
     const overrides = this.context.globalState.get<SessionMetaOverrides>(SESSION_META_KEY, {});
@@ -4118,6 +4202,23 @@ See design doc for the full state machine diagram.`;
       ...overrides,
       [id]: { ...(overrides[id] ?? {}), usage: session.sessionUsage },
     });
+  }
+
+  /** Replace the session total with `_x.ai/session/usage` when the CLI has one
+   *  (authoritative cumulative, may include cost the turn meta lacked). */
+  private async refreshSessionUsageFromCli(session: Session): Promise<void> {
+    const client = session.client;
+    if (!client) return;
+    const gen = session.gen;
+    try {
+      const fromCli = await client.getSessionUsage();
+      if (gen !== session.gen || !fromCli) return;
+      session.sessionUsage = fromCli;
+      this.emit(session, { type: "usage", turn: session.lastTurnUsage, session: session.sessionUsage });
+      this.persistSessionUsage(session);
+    } catch (e) {
+      this.output.appendLine(`[usage] session/usage refresh failed: ${(e as Error).message}`);
+    }
   }
 
   /** Seed a (re)opened session's cumulative billing from our own globalState and
@@ -4177,8 +4278,18 @@ See design doc for the full state machine diagram.`;
       // parseSessionInfoContext is null-safe and never throws: a reply-format
       // change means no donut update (it lags until the next turn), never an
       // error surfaced to the user.
-      const parsed = parseSessionInfoContext(session.captureAgentText ?? "");
+      const text = session.captureAgentText ?? "";
+      const parsed = parseSessionInfoContext(text);
       if (parsed) this.emit(session, { type: "contextUsage", used: parsed.used, window: parsed.window });
+      const auth = parseSessionInfoAuth(text);
+      if (auth) {
+        this.emit(session, {
+          type: "authMethod",
+          method: auth.method,
+          label: auth.label,
+          manageUrl: auth.manageUrl,
+        });
+      }
     } catch (e) {
       // Even a failed hidden turn stays silent — log-only, no error bubble.
       this.output.appendLine(`[compact] hidden /session-info failed: ${(e as Error).message}`);

@@ -1700,10 +1700,10 @@ textarea#input {
 
 .model-effort-row {
   display: flex;
-  align-items: center;
+  align-items: center; /* model name centers against the taller labeled dots */
   justify-content: space-between;
   gap: 6px;
-  padding: 4px 6px;
+  padding: 4px 6px 6px;
 }
 .model-name-btn {
   flex-shrink: 1;
@@ -1714,27 +1714,35 @@ textarea#input {
 
 .effort-dots {
   display: inline-flex;
-  align-items: center;
-  gap: 1px;
+  align-items: flex-end;
+  gap: 2px;
   flex-shrink: 0;
 }
+/* One column per level: CSS-shaped mark + tiny caption (primary affordance —
+   webview title tooltips are delayed/unreliable). */
 .effort-dot {
   display: inline-flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-end;
+  gap: 2px;
   cursor: pointer;
   user-select: none;
-  width: 16px;
-  height: 16px;
-  padding: 0;
-  border-radius: 50%;
-  opacity: 0.6;
+  min-width: 22px;
+  padding: 2px 1px 1px;
+  margin: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  font: inherit;
+  line-height: 1;
+  opacity: 0.7;
   box-sizing: border-box;
 }
 /* Inner CSS-shaped dot — identical size for active + inactive. Avoids the
    Unicode ●/○ glyph-pair mismatch where the empty circle renders larger. */
-.effort-dot::before {
-  content: "";
+.effort-dot .effort-mark {
   display: block;
   width: 9px;
   height: 9px;
@@ -1742,13 +1750,39 @@ textarea#input {
   box-sizing: border-box;
   border: 1.5px solid var(--vscode-descriptionForeground);
   background: transparent;
+  flex-shrink: 0;
 }
-.effort-dot.active::before {
+.effort-dot.active .effort-mark {
   background: var(--vscode-button-background);
   border-color: var(--vscode-button-background);
 }
+.effort-dot .effort-label {
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+  max-width: 28px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
+}
+.effort-dot.active .effort-label,
+.effort-dot.selected .effort-label {
+  color: var(--vscode-foreground);
+  opacity: 1;
+}
+.effort-dot.selected .effort-label {
+  font-weight: 700;
+  color: var(--vscode-button-background);
+}
 .effort-dot:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground); }
 .effort-dot.active { opacity: 1; }
+.effort-dot:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
 
 /* Model + effort are locked while the session is busy/priming (mirrors the
    disabled send button). No pointer, no hover affordance. */

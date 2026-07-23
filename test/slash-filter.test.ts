@@ -5,6 +5,7 @@ import {
   filterCommands,
   getSlashQuery,
   HIDDEN_SLASH_COMMANDS,
+  isDisabledMediaSlash,
   matchSlashCommand,
 } from "../src/slash-filter";
 
@@ -109,6 +110,32 @@ describe("filterAdvertisedCommands", () => {
     // Filtered out → matchSlashCommand won't recognize it as a command.
     expect(matchSlashCommand("/always-approve", names)).toBeNull();
     expect(matchSlashCommand("/compact", names)).toBe("compact");
+  });
+
+  it("hides /imagine and /imagine-video when media gen is disabled (0.2.111)", () => {
+    const cmds = [
+      { name: "compact" },
+      { name: "imagine" },
+      { name: "imagine-edit" },
+      { name: "imagine-video" },
+      { name: "session-info" },
+    ];
+    expect(
+      filterAdvertisedCommands(cmds, { imageGen: false, videoGen: false }).map((c) => c.name),
+    ).toEqual(["compact", "session-info"]);
+    expect(
+      filterAdvertisedCommands(cmds, { imageGen: true, videoGen: false }).map((c) => c.name),
+    ).toEqual(["compact", "imagine", "imagine-edit", "session-info"]);
+  });
+});
+
+describe("isDisabledMediaSlash", () => {
+  it("flags image/video slash commands only when the matching flag is off", () => {
+    expect(isDisabledMediaSlash("imagine", { image: false, video: true })).toBe(true);
+    expect(isDisabledMediaSlash("imagine-video", { image: true, video: false })).toBe(true);
+    expect(isDisabledMediaSlash("imagine", { image: true, video: true })).toBe(false);
+    expect(isDisabledMediaSlash("compact", { image: false, video: false })).toBe(false);
+    expect(isDisabledMediaSlash(null, { image: false, video: false })).toBe(false);
   });
 });
 

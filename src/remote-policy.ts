@@ -186,6 +186,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   queuedSends: "mirror",
   steerUnavailable: "mirror",
   usage: "mirror",
+  authMethod: "mirror",
 };
 
 // ---------- media inlining ----------

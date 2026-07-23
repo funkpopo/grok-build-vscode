@@ -26,17 +26,31 @@
   const historyPopover = $("history-popover");
   const scrollBottomBtn = $("scroll-bottom-btn");
 
-  // grok's accepted reasoning-effort values, lowest → highest (matches the CLI;
-  // `max` is not a real grok level and is intentionally excluded — see #3/#4).
-  const EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"];
+  // Fallback effort ladder when the model doesn't advertise a menu (older CLI
+  // or a non-reasoning model). Live picker prefers models[]._meta.reasoningEfforts
+  // (incl. `max` on 0.2.109+ when advertised).
+  const DEFAULT_EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh"];
   const EFFORT_TOOLTIPS = {
     none: "None — no extra reasoning",
     minimal: "Minimal — least reasoning",
     low: "Low — fast, lightweight reasoning",
     medium: "Medium — balanced",
     high: "High — deeper reasoning",
-    xhigh: "XHigh — deepest reasoning, slowest",
+    xhigh: "XHigh — deeper reasoning, slower",
+    max: "Max — deepest reasoning (when the model offers it)",
   };
+  /** Tiny caption under each effort dot (scannable; full wording stays in the tooltip). */
+  const EFFORT_SHORT = {
+    none: "off",
+    minimal: "min",
+    low: "low",
+    medium: "med",
+    high: "high",
+    xhigh: "xhi",
+    max: "max",
+  };
+  /** Canonical low→high order for known levels; unknown advertised values append. */
+  const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
   const state = {
     welcomeVisible: true,
@@ -78,6 +92,11 @@
     steerSupported: true,
     lastTurnUsage: null, // last prompt's billing split (#53), for the donut popover
     sessionUsage: null, // session-cumulative billing — summed by the host, not grok
+    // Effort levels for the CURRENT model (from models[]._meta.reasoningEfforts).
+    // Empty → fall back to DEFAULT_EFFORT_LEVELS in the gear picker.
+    effortLevels: [],
+    // Auth method for the gear Session section (0.2.111); null until the host posts.
+    authMethod: null,
     activeAgentEl: null,
     activeAgentRaw: "",
     activeUserEl: null,
@@ -321,6 +340,46 @@
     if (!s) return "";
     if (s === "xhigh") return "XHigh";
     return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+
+  /** Short caption for an effort level (falls back to a trimmed id). */
+  function effortShortLabel(id) {
+    if (!id) return "";
+    return EFFORT_SHORT[id] || String(id).slice(0, 4);
+  }
+
+  /** Full hover/aria text for an effort level. */
+  function effortTooltip(id) {
+    return EFFORT_TOOLTIPS[id] || capitalize(id);
+  }
+
+  /** Format a USD cost for the context popover — enough digits for sub-cent turns. */
+  function formatUsd(n) {
+    if (typeof n !== "number" || !Number.isFinite(n)) return "";
+    if (n === 0) return "$0";
+    if (Math.abs(n) < 0.01) return `$${n.toFixed(4)}`;
+    if (Math.abs(n) < 1) return `$${n.toFixed(3)}`;
+    return `$${n.toFixed(2)}`;
+  }
+
+  /**
+   * Effort levels to show in the gear picker: the current model's advertised
+   * menu when present, else the static default ladder. Known ids keep a stable
+   * low→high order; unknown advertised values append.
+   */
+  function effortLevelsForPicker() {
+    const advertised = Array.isArray(state.effortLevels) ? state.effortLevels.filter(Boolean) : [];
+    if (!advertised.length) return DEFAULT_EFFORT_LEVELS.slice();
+    const rank = (id) => {
+      const i = EFFORT_ORDER.indexOf(id);
+      return i < 0 ? 1000 : i;
+    };
+    return [...new Set(advertised)].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+  }
+
+  function syncEffortLevelsFromModels() {
+    const m = state.availableModels.find((x) => x.modelId === state.currentModelId);
+    state.effortLevels = Array.isArray(m?.reasoningEfforts) ? m.reasoningEfforts.slice() : [];
   }
 
   function toK(n) {
@@ -1057,6 +1116,9 @@
     // present when you want it, out of the way when you don't.
     if (sess) {
       section("Session total");
+      // Dollar cost first when present — the number people act on. Omitted when
+      // the server didn't stamp a complete bill (OAuth/pool paths often skip it).
+      row(sess, "Cost", "costUsd", formatUsd);
       row(sess, "Input", "inputTokens");
       row(sess, "↳ cache read", "cachedReadTokens");
       row(sess, "Output", "outputTokens");
@@ -1070,6 +1132,7 @@
       const body = document.createElement("div");
       body.hidden = !open;
       contextPopover.appendChild(body);
+      row(turn, "Cost", "costUsd", formatUsd, body);
       row(turn, "Input", "inputTokens", null, body);
       row(turn, "↳ cache read", "cachedReadTokens", null, body);
       row(turn, "Output", "outputTokens", null, body);
@@ -1090,8 +1153,11 @@
 
     const fine = document.createElement("div");
     fine.className = "popover-fineprint";
+    const hasCost = (sess && sess.costUsd != null) || (turn && turn.costUsd != null);
     fine.textContent = turn || sess
-      ? "Context is how full the window is. Token counts are billed usage tracked by the extension — each model call re-sends the conversation, so a turn bills far more than the context it holds."
+      ? (hasCost
+        ? "Context is window fullness. Tokens and $ are billed usage — each model call re-sends the conversation, so a turn bills far more than the context it holds. Cost appears only when the server stamped a complete bill."
+        : "Context is how full the window is. Token counts are billed usage tracked by the extension — each model call re-sends the conversation, so a turn bills far more than the context it holds. Dollar cost is shown when the CLI reports it (often API-key traffic only).")
       : "Counted by the CLI at the end of each turn.";
     contextPopover.appendChild(fine);
 
@@ -1200,23 +1266,49 @@
 
     const dotsEl = document.createElement("span");
     dotsEl.className = "effort-dots" + (settingsLocked ? " disabled" : "");
-    const currentIdx = EFFORT_LEVELS.indexOf(state.effort);
-    EFFORT_LEVELS.forEach((id, i) => {
-      const dot = document.createElement("span");
-      dot.className = "effort-dot" + (i <= currentIdx ? " active" : "") + (settingsLocked ? " disabled" : "");
-      // Render the dot as a CSS-shaped span (see chat.css). Avoids the classic
-      // ● vs ○ Unicode size mismatch where the empty glyph is visibly larger.
-      dot.title = settingsLocked
+    dotsEl.setAttribute("role", "group");
+    dotsEl.setAttribute("aria-label", "Reasoning effort");
+    const levels = effortLevelsForPicker();
+    const currentIdx = levels.indexOf(state.effort);
+    levels.forEach((id, i) => {
+      // Each level is a column: CSS-shaped dot + tiny caption (webview native
+      // title tooltips are unreliable / delayed, so the short label is the
+      // primary affordance; title + aria-label keep the full wording).
+      const cell = document.createElement("button");
+      cell.type = "button";
+      // Active fill is "up to current" only when the selected level is on this
+      // menu; an off-menu saved effort just highlights none of the dots.
+      const filled = currentIdx >= 0 && i <= currentIdx;
+      const selected = state.effort === id;
+      cell.className = "effort-dot" + (filled ? " active" : "") + (selected ? " selected" : "")
+        + (settingsLocked ? " disabled" : "");
+      const tip = settingsLocked
         ? "Available once the session is ready"
-        : (EFFORT_TOOLTIPS[id] || capitalize(id));
-      if (!settingsLocked) dot.onclick = (e) => {
+        : effortTooltip(id) + (selected ? " (selected — click to clear)" : " — click to set");
+      cell.title = tip;
+      cell.setAttribute("aria-label", tip);
+      cell.setAttribute("aria-pressed", selected ? "true" : "false");
+      cell.disabled = settingsLocked;
+
+      const mark = document.createElement("span");
+      mark.className = "effort-mark";
+      mark.setAttribute("aria-hidden", "true");
+      cell.appendChild(mark);
+
+      const label = document.createElement("span");
+      label.className = "effort-label";
+      label.textContent = effortShortLabel(id);
+      label.setAttribute("aria-hidden", "true");
+      cell.appendChild(label);
+
+      if (!settingsLocked) cell.onclick = (e) => {
         e.stopPropagation();
         state.effort = state.effort === id ? "" : id;
         vscode.postMessage({ type: "setEffort", level: state.effort });
         renderGearMain();
         gearPopover.hidden = false;
       };
-      dotsEl.appendChild(dot);
+      dotsEl.appendChild(cell);
     });
     row.appendChild(dotsEl);
     gearPopover.appendChild(row);
@@ -1225,6 +1317,21 @@
     // Session-LIFECYCLE actions live here; context actions (Compact) live on the
     // context donut, next to the number that motivates them.
     addSection("Session");
+    if (state.authMethod && state.authMethod.label && state.authMethod.method !== "unknown") {
+      const authLabel = state.authMethod.label;
+      const url = state.authMethod.manageUrl;
+      if (url) {
+        addGearItem(
+          `<span>Auth: ${escapeHtml(authLabel)}</span><span class="popover-chevron">↗</span>`,
+          () => {
+            vscode.postMessage({ type: "openUrl", url });
+            closePopovers();
+          },
+        );
+      } else {
+        addGearInfo(`Auth: ${escapeHtml(authLabel)}`);
+      }
+    }
     addGearItem(`<span>Fork conversation</span>`, () => {
       vscode.postMessage({ type: "forkSession" });
       closePopovers();
@@ -5144,6 +5251,7 @@
         state.availableModels = msg.models || [];
         const m = state.availableModels.find((x) => x.modelId === msg.currentModelId);
         if (m?.totalContextTokens) state.contextWindow = m.totalContextTokens;
+        syncEffortLevelsFromModels();
         updateDonut(0);
         break;
       }
@@ -5155,8 +5263,17 @@
         // donut keeps showing the wrong ceiling and an inflated percentage.
         const m = state.availableModels.find((x) => x.modelId === msg.modelId);
         if (m && m.totalContextTokens) { state.contextWindow = m.totalContextTokens; updateDonut(); }
+        syncEffortLevelsFromModels();
         break;
       }
+      case "authMethod":
+        state.authMethod = {
+          method: msg.method || "unknown",
+          label: msg.label || "",
+          manageUrl: msg.manageUrl || undefined,
+        };
+        if (!gearPopover.hidden && state.gearView === "main") renderGearMain();
+        break;
       case "modeChanged":
         state.currentModeId = msg.modeId;
         updateModeBtn(msg.modeId);

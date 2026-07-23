@@ -513,6 +513,29 @@ describe("gear settings lock (model + effort disabled while busy / priming)", ()
     expect(types(posted)).not.toContain("setEffort");
   });
 
+  it("effort levels show a short visible caption + a full tooltip (not bare dots)", () => {
+    // Webview native title tooltips are delayed/unreliable; the caption under
+    // each dot is the primary affordance (off/min/low/med/high/…).
+    const { window, doc } = bootWithModels();
+    // Advertise a short menu so the labels we assert are deterministic.
+    dispatch(window, {
+      type: "session",
+      sessionId: "s1",
+      models: [{
+        modelId: "grok-build",
+        name: "Grok Build",
+        reasoningEfforts: ["low", "medium", "high"],
+      }],
+      currentModelId: "grok-build",
+    });
+    click(window, $(doc, "gear-btn"));
+    const labels = [...doc.querySelectorAll(".effort-dot .effort-label")].map((el) => el.textContent);
+    expect(labels).toEqual(["low", "med", "high"]);
+    const first = doc.querySelector(".effort-dot") as HTMLElement;
+    expect(first.title).toMatch(/Low/i);
+    expect(first.getAttribute("aria-label")).toMatch(/Low/i);
+  });
+
   it("re-renders an open gear to unlock the controls once busy clears", () => {
     const { window, doc } = bootWithModels({ value: true, locked: true });
     click(window, $(doc, "gear-btn"));
