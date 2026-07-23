@@ -156,6 +156,17 @@ export type HostMsg =
       method: string;
       label: string;
       manageUrl?: string;
+    }
+  // `/btw` side question (P3-16) — aside that does not cancel/steer the main
+  // turn. Host posts `pending:true` immediately, then a second message with
+  // `answer` or `error`. Buffered for warm re-focus; not restored from disk.
+  | {
+      type: "btwExchange";
+      id: string;
+      question: string;
+      answer?: string;
+      pending?: boolean;
+      error?: string;
     };
 
 /** webview -> host */
@@ -231,7 +242,10 @@ export type WebviewMsg =
   // per-message Rewind button; omit it for the command-palette QuickPick path.
   | { type: "rewindSession"; userBubbleIndex?: number }
   // Workflow card controls (P2-10): pause / resume / stop by display name.
-  | { type: "workflowControl"; action: "pause" | "resume" | "stop"; displayName: string };
+  | { type: "workflowControl"; action: "pause" | "resume" | "stop"; displayName: string }
+  // `/btw` side question (P3-16): host calls `_x.ai/btw` instead of
+  // session/prompt / queue / steer. Works mid-turn without interrupting.
+  | { type: "btwSend"; text: string };
 
 // Exhaustive maps: `Record<Union["type"], true>` forces every discriminant to be
 // a key (missing -> tsc error) and forbids any extra (excess-property -> tsc
@@ -252,7 +266,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   sessionContext: true, clearMessages: true, onboarding: true, error: true,
   xaiNotification: true, subagentUpdate: true, runProgress: true, commandOutput: true, expandCommandOutputs: true, steerByDefault: true,
   focusInput: true, sessions: true, sessionDot: true, queuedSends: true,
-  steerUnavailable: true, usage: true, authMethod: true,
+  steerUnavailable: true, usage: true, authMethod: true, btwExchange: true,
 };
 
 const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
@@ -270,7 +284,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   voiceStop: true, queueSend: true, dequeueSend: true, clearQueuedSends: true,
   steerSend: true, forkSession: true,
   newWorktreeSession: true, applyWorktree: true, removeWorktree: true,
-  rewindSession: true, workflowControl: true,
+  rewindSession: true, workflowControl: true, btwSend: true,
 };
 
 export const HOST_MESSAGE_TYPES: readonly HostMsg["type"][] = Object.keys(HOST_MESSAGE_TYPE_MAP) as HostMsg["type"][];

@@ -20,6 +20,7 @@ import {
   resolveModelId,
   routeSessionUpdate,
 } from "./acp-dispatch";
+import { extractBtwAnswer } from "./btw";
 import {
   PLAN_BLOCKED_CODE,
   PLAN_BLOCKED_TERMINAL_MSG,
@@ -511,6 +512,38 @@ export class AcpClient extends EventEmitter {
     } catch (e: any) {
       if (isMethodNotFoundError(e)) {
         this.opts.log("[interject] CLI does not support _x.ai/interject; falling back to queue");
+        return "unsupported";
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Side question (P3-16 / `/btw`) — ask the model without cancelling or
+   * steering the main turn. Distinct from `interject` (#52 Steer): the answer
+   * arrives only on this RPC result (not as parent `agent_message_chunk`), and
+   * a mid-turn call leaves the in-flight prompt's stopReason as `end_turn`
+   * (probe-confirmed 0.2.111 — research/btw.md).
+   *
+   * Params: `{ sessionId, question }` (`text` is -32602). Result is double-
+   * wrapped `{ result: { answer } }` on 0.2.111; `extractBtwAnswer` unwraps it.
+   * Returns `"unsupported"` on -32601 so older CLIs degrade cleanly.
+   */
+  async btw(question: string): Promise<{ answer: string } | "unsupported"> {
+    if (!this.sessionId) throw new Error("no session");
+    try {
+      const res = await this.request("_x.ai/btw", {
+        sessionId: this.sessionId,
+        question,
+      });
+      const answer = extractBtwAnswer(res);
+      if (answer === undefined) {
+        throw new Error("btw returned no answer");
+      }
+      return { answer };
+    } catch (e: any) {
+      if (isMethodNotFoundError(e)) {
+        this.opts.log("[btw] CLI does not support _x.ai/btw");
         return "unsupported";
       }
       throw e;

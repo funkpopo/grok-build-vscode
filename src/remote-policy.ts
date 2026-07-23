@@ -63,6 +63,8 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   rewindSession: "full",
   // Workflow pause/resume/stop is a slash turn (same class as queueSend/steer).
   workflowControl: "propose",
+  // `/btw` side question — same class as send/steer (turn control, no FS).
+  btwSend: "propose",
   pasteImage: "propose",
   removeChip: "propose",
   toggleChip: "propose",
@@ -197,6 +199,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   steerUnavailable: "mirror",
   usage: "mirror",
   authMethod: "mirror",
+  btwExchange: "mirror",
 };
 
 // ---------- media inlining ----------

@@ -148,6 +148,8 @@
     subagentCards: new Map(),
     // Deep Research / Workflow / Goal progress cards (P2-10) — keyed by run/goal id.
     runProgressCards: new Map(),
+    // `/btw` side-question cards (P3-16) — keyed by host-issued exchange id.
+    btwCards: new Map(),
     // The current turn's agent-message footer (copy + timestamp). Only the
     // turn's LAST narration segment keeps one — see addMessage.
     turnAgentActionsEl: null,
@@ -406,7 +408,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, getMentionQuery, applyMentionPick } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, isBtwSlash, getMentionQuery, applyMentionPick } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -1864,6 +1866,7 @@
     state.toolFailuresById.clear();
     state.subagentCards.clear();
     state.runProgressCards.clear();
+    state.btwCards.clear();
     // Question/restored-card maps too, or a new session's tool updates could
     // attach to the previous session's (now-detached) cards by toolCallId.
     state.questionToolCalls.clear();
@@ -3625,6 +3628,69 @@
     return true;
   }
 
+  // ---------- `/btw` side questions (P3-16) ----------
+  // Host posts btwExchange (pending → answer|error). Aside card, not a main-turn
+  // bubble — does not flip busy and does not interleave with agent narration.
+
+  function applyBtwExchange(msg) {
+    if (!msg || !msg.id) return;
+    clearWelcome();
+    // Don't hide Grokking — a side question can land mid-turn and the main
+    // activity indicator must keep running.
+    const id = String(msg.id);
+    let el = state.btwCards.get(id);
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "btw-card";
+      el.dataset.btwId = id;
+      el.innerHTML =
+        `<div class="btw-row">` +
+          `<span class="btw-badge" title="Side question — does not interrupt the main turn">BTW</span>` +
+          `<span class="btw-sep">·</span>` +
+          `<span class="btw-label">side question</span>` +
+          BLINK_DOTS +
+          `<span class="btw-status"></span>` +
+        `</div>` +
+        `<div class="btw-question"></div>` +
+        `<div class="btw-answer" hidden></div>`;
+      state.btwCards.set(id, el);
+      messagesEl.appendChild(el);
+      scrollToBottom(true);
+    }
+
+    const qEl = el.querySelector(".btw-question");
+    qEl.textContent = msg.question || "";
+    qEl.title = msg.question || "";
+
+    const ans = el.querySelector(".btw-answer");
+    const status = el.querySelector(".btw-status");
+    const dots = el.querySelector(".blink-dots");
+    const pending = !!msg.pending && !msg.answer && !msg.error;
+
+    el.classList.toggle("btw-pending", pending);
+    el.classList.toggle("btw-failed", !!msg.error);
+    el.classList.toggle("btw-done", !pending && !msg.error);
+
+    if (dots) dots.hidden = !pending;
+    if (pending) {
+      status.textContent = "answering…";
+      ans.hidden = true;
+      ans.textContent = "";
+      ans.classList.remove("btw-error");
+    } else if (msg.error) {
+      status.textContent = "failed";
+      ans.hidden = false;
+      ans.textContent = String(msg.error);
+      ans.classList.add("btw-error");
+    } else {
+      status.textContent = "";
+      ans.hidden = false;
+      ans.textContent = msg.answer != null ? String(msg.answer) : "";
+      ans.classList.remove("btw-error");
+    }
+    scrollToBottom();
+  }
+
   // ---------- Workflow / Goal / Deep-research progress cards (P2-10) ----------
   // Host normalizes `_x.ai/session_notification` workflow_updated / goal_updated
   // into a stable shape; we upsert one card per id and stop the dots on done.
@@ -5102,6 +5168,15 @@
     // Sendable = typed text or any visible chip (file or image alike — image
     // chips render as remove-only attachment rows, so they're never hidden).
     if (!text && state.chips.every((c) => c.hidden)) return;
+    // `/btw` side question (P3-16): host RPC, not a main turn — leave busy alone.
+    if (text && (typeof isBtwSlash === "function" ? isBtwSlash(text) : /^\/btw(?:\s|$)/i.test(text))) {
+      vscode.postMessage({ type: "btwSend", text });
+      input.value = "";
+      renderInputHighlight();
+      slashPopover.hidden = true;
+      hideMention();
+      return;
+    }
     state.busy = true;
     updateSendButton();
     state.activeAgentEl = null;
@@ -5245,6 +5320,11 @@
   function submitMessage(text) {
     const t = (text || "").trim();
     if (!t) return;
+    // `/btw` is an aside (P3-16) — never flip main-turn busy / never session/prompt.
+    if (typeof isBtwSlash === "function" ? isBtwSlash(t) : /^\/btw(?:\s|$)/i.test(t)) {
+      vscode.postMessage({ type: "btwSend", text: t });
+      return;
+    }
     state.busy = true;
     updateSendButton();
     state.activeAgentEl = null;
@@ -5264,12 +5344,19 @@
   // The single choke point for "the user sent something while grok is working" —
   // typed Enter/click AND a dictated utterance both land here.
   //
+  // `/btw` is higher priority than queue/steer: a side question must fire now
+  // without cancelling or interjecting into the main turn (P3-16).
+  //
   // grok.steerByDefault flips it from "wait for the turn" to "go in now". Three
   // guards, each for a case where there is nothing to steer INTO: a locked turn
   // (session-start priming — no session id to interject against yet), a CLI that
   // can't interject, and (defensively) not being busy at all. Any of those fall
   // back to the queue, which is the safe home for the text either way.
   function queueOutgoing(text) {
+    if (typeof isBtwSlash === "function" ? isBtwSlash(text) : /^\/btw(?:\s|$)/i.test(String(text || "").trim())) {
+      vscode.postMessage({ type: "btwSend", text });
+      return;
+    }
     if (state.steerByDefault && state.steerSupported && state.busy && !state.busyLocked) {
       vscode.postMessage({ type: "steerSend", text });
       return;
@@ -5826,6 +5913,9 @@
       }
       case "runProgress":
         applyRunProgress(msg.update);
+        break;
+      case "btwExchange":
+        applyBtwExchange(msg);
         break;
       case "permissionRequest":
         addPermissionCard(msg.req);

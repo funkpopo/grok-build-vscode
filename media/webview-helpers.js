@@ -24,6 +24,7 @@
     "promptComplete", "contextUsage", "commandOutput", "expandCommandOutputs", "focusInput", "agentReset", "agentError", "agentEnd", "exit", "setBusy", "summarizing",
     "sessionContext", "clearMessages", "onboarding", "error", "xaiNotification", "subagentUpdate", "runProgress", "sessions",
     "sessionDot", "queuedSends", "steerUnavailable", "usage", "authMethod", "steerByDefault",
+    "btwExchange",
   ];
   const WEBVIEW_MESSAGE_TYPES = [
     "ready", "send", "newSession", "cancel", "pickModel", "setMode", "removeChip",
@@ -36,6 +37,7 @@
     "clearAllSessions", "pickFile", "mentionQuery", "addMentionFile", "pasteImage", "voiceStart", "voiceStop",
     "queueSend", "dequeueSend", "clearQueuedSends", "steerSend", "forkSession", "setSteerByDefault",
     "newWorktreeSession", "applyWorktree", "removeWorktree", "rewindSession", "workflowControl",
+    "btwSend",
   ];
   const HOST_MESSAGE_TYPE_SET = new Set(HOST_MESSAGE_TYPES);
   /** True when `type` is a host->webview message the contract knows about. A
@@ -43,6 +45,22 @@
    *  drift the sync test is designed to prevent, warned at runtime as a backstop. */
   function isKnownHostMessage(type) {
     return HOST_MESSAGE_TYPE_SET.has(type);
+  }
+
+  // ---- `/btw` side questions (P3-16) ----
+  // Mirror of src/btw.ts — webview can't import TS. Keep set-equal via tests.
+
+  /** True when composer text is a leading `/btw` command (body optional). */
+  function isBtwSlash(text) {
+    return /^\/btw(?:\s|$)/i.test(String(text || "").trim());
+  }
+
+  /** Parse `/btw <question>`; null when not a btw command. */
+  function parseBtwSlash(text) {
+    const t = String(text || "").trim();
+    const m = t.match(/^\/btw(?:\s+([\s\S]*))?$/i);
+    if (!m) return null;
+    return { question: (m[1] || "").trim() };
   }
 
   // ---- "@" file mention (composer autocomplete) ----
@@ -692,7 +710,7 @@
     return `Plan mode ${what}. ${how}`;
   }
 
-  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, planBlockedNoticeText };
+  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, isBtwSlash, parseBtwSlash, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, planBlockedNoticeText };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

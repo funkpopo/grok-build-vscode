@@ -54,6 +54,7 @@ import {
 } from "./chips";
 import { buildPromptWithImages, type PromptImageInput } from "./prompt-builder";
 import { isDisabledMediaSlash, matchSlashCommand } from "./slash-filter";
+import { BTW_USAGE, isBtwSlash, parseBtwSlash } from "./btw";
 import { MENTION_INDEX_LIMIT, MENTION_INDEX_TTL_MS, buildExcludeGlob, filterMentionFiles, normalizeRelPath, orderMentionIndex } from "./mention";
 import {
   configCombineQueuedPrompts,
@@ -971,6 +972,69 @@ See design doc for the full state machine diagram.`;
     }
     this.emit(session, { type: "queuedSends", items: [...session.queuedSends] });
     await this.handleSend(text, false, session);
+  }
+
+  /**
+   * `/btw` side question (P3-16) — ask the model without cancelling or steering
+   * the main turn. Distinct from Steer (#52): the answer rides the `_x.ai/btw`
+   * RPC result only (no parent `agent_message_chunk`), and a mid-turn call
+   * leaves the in-flight prompt intact (`end_turn`, research/btw.md).
+   *
+   * Does not set main-turn busy, does not go through prompt-builder / chips /
+   * the send queue. Card is painted pending, then filled with answer or error.
+   */
+  private async btwSend(text: string): Promise<void> {
+    const session = this.focused;
+    const parsed = parseBtwSlash(text ?? "");
+    const question = parsed ? parsed.question : (text ?? "").trim();
+    if (!question) {
+      this.emit(session, { type: "error", text: BTW_USAGE });
+      return;
+    }
+    const client = session.client ?? (session === this.focused ? await this.ensureClient() : undefined);
+    if (!client || !session.activeSessionId) {
+      this.emit(session, {
+        type: "error",
+        text: "Start a session before asking a side question.",
+      });
+      return;
+    }
+    const gen = session.gen;
+    const id = `btw-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    this.emit(session, { type: "btwExchange", id, question, pending: true });
+    try {
+      // Side questions don't need the plan-mode primer; they are one-shot asides.
+      const r = await client.btw(question);
+      if (gen !== session.gen) return;
+      if (r === "unsupported") {
+        this.emit(session, {
+          type: "btwExchange",
+          id,
+          question,
+          pending: false,
+          error:
+            "Side questions need a newer Grok Build CLI (supports _x.ai/btw). Update via the gear menu → Version & about.",
+        });
+        return;
+      }
+      this.emit(session, {
+        type: "btwExchange",
+        id,
+        question,
+        answer: r.answer,
+        pending: false,
+      });
+      this.output.appendLine(`[btw] answered ${question.length}→${r.answer.length} chars`);
+    } catch (e: any) {
+      if (gen !== session.gen) return;
+      this.emit(session, {
+        type: "btwExchange",
+        id,
+        question,
+        pending: false,
+        error: e?.message ?? String(e),
+      });
+    }
   }
 
   /**
@@ -2819,7 +2883,12 @@ See design doc for the full state machine diagram.`;
         this.postInitialState();
         break;
       case "send":
-        await this.handleSend(msg.text, msg.bare === true);
+        // `/btw` is an aside RPC — never a main-turn prompt (P3-16).
+        if (isBtwSlash(msg.text ?? "")) {
+          await this.btwSend(msg.text);
+        } else {
+          await this.handleSend(msg.text, msg.bare === true);
+        }
         break;
       case "newSession":
         await this.newFocusedSession();
@@ -2834,8 +2903,13 @@ See design doc for the full state machine diagram.`;
         // `combineQueuedPrompts` is on (default / `[ui] combine_queued_prompts`),
         // composing more APPENDS into one entry (blank-line separator). When off,
         // each compose is its own entry and flush drains one turn at a time.
+        // A `/btw` mid-turn must not queue — it is a side question (P3-16).
         const s = this.focused;
         if (typeof msg.text === "string" && msg.text.trim()) {
+          if (isBtwSlash(msg.text)) {
+            await this.btwSend(msg.text);
+            break;
+          }
           if (s.combineQueuedPrompts && s.queuedSends.length) {
             s.queuedSends[0] += "\n\n" + msg.text;
           } else {
@@ -2855,6 +2929,9 @@ See design doc for the full state machine diagram.`;
         }
         break;
       }
+      case "btwSend":
+        await this.btwSend(msg.text);
+        break;
       case "steerSend":
         await this.steerSend(msg.text);
         break;
