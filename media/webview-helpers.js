@@ -22,7 +22,7 @@
     "planHistoryQueue", "planProcessing", "toolCall", "toolCallUpdate", "permissionRequest",
     "permissionResolved", "exitPlanRequest", "planResolved", "questionRequest", "planNotice", "autoCompactNotice", "planBlocked",
     "promptComplete", "contextUsage", "commandOutput", "expandCommandOutputs", "focusInput", "agentReset", "agentError", "agentEnd", "exit", "setBusy", "summarizing",
-    "sessionContext", "clearMessages", "onboarding", "error", "xaiNotification", "subagentUpdate", "sessions",
+    "sessionContext", "clearMessages", "onboarding", "error", "xaiNotification", "subagentUpdate", "runProgress", "sessions",
     "sessionDot", "queuedSends", "steerUnavailable", "usage", "authMethod", "steerByDefault",
   ];
   const WEBVIEW_MESSAGE_TYPES = [
@@ -35,7 +35,7 @@
     "recheckConnection", "listSessions", "resumeSession", "renameSession", "deleteSession",
     "clearAllSessions", "pickFile", "mentionQuery", "addMentionFile", "pasteImage", "voiceStart", "voiceStop",
     "queueSend", "dequeueSend", "clearQueuedSends", "steerSend", "forkSession", "setSteerByDefault",
-    "newWorktreeSession", "applyWorktree", "removeWorktree",
+    "newWorktreeSession", "applyWorktree", "removeWorktree", "rewindSession", "workflowControl",
   ];
   const HOST_MESSAGE_TYPE_SET = new Set(HOST_MESSAGE_TYPES);
   /** True when `type` is a host->webview message the contract knows about. A
