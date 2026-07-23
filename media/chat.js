@@ -1318,10 +1318,9 @@
       vscode.postMessage({ type: "forkSession" });
       closePopovers();
     });
-    addGearItem(`<span>Rewind conversation</span>`, () => {
-      vscode.postMessage({ type: "rewindSession" });
-      closePopovers();
-    });
+    // Rewind lives on user-bubble hover actions (Copy · Rewind · time), not
+    // the gear menu — gear is for session-lifecycle ops. Command palette
+    // `Grok: Rewind Conversation` remains a QuickPick fallback.
     // Worktree UI (P2-8) — isolated git checkout for a session. Apply merges
     // edits back into the main workspace; Remove deletes the checkout.
     addGearItem(`<span>New worktree session</span>`, () => {
@@ -2038,13 +2037,14 @@
       copyBtn.title = "Copy message";
       copyBtn.innerHTML = `<span class="msg-action-glyph">${ICON.copy}</span>`;
       actions.appendChild(copyBtn);
-      // Rewind sits next to Copy on user bubbles only (P2-9). Latest message
-      // has nothing after it to discard — hidden via refreshUserRewindButtons.
+      // Rewind sits next to Copy on user bubbles only (P2-9) — not in the gear
+      // menu. First message always keeps the button (sole turn undoes via the
+      // prior checkpoint); later tips hide it (refreshUserRewindButtons).
       if (role === "user") {
         const rewindBtn = document.createElement("button");
         rewindBtn.className = "msg-action-btn msg-rewind-btn";
         rewindBtn.type = "button";
-        rewindBtn.title = "Rewind to this message";
+        rewindBtn.title = "Rewind to this message (discard later turns + restore files)";
         rewindBtn.setAttribute("aria-label", "Rewind to this message");
         rewindBtn.innerHTML = `<span class="msg-action-glyph">${ICON.undo}</span>`;
         actions.appendChild(rewindBtn);
@@ -2087,7 +2087,8 @@
 
   /**
    * Keep each user bubble's Rewind button + data-user-bubble-index in sync.
-   * The latest user message can't be a rewind target (CLI tip); earlier ones can.
+   * First user message always shows Rewind (sole turn = undo via prior
+   * checkpoint). Later tips hide it (nothing after them to discard).
    * Queued (not-yet-sent) blocks are excluded.
    */
   function refreshUserRewindButtons() {
@@ -2096,8 +2097,8 @@
       el.dataset.userBubbleIndex = String(i);
       const btn = el.querySelector(".msg-rewind-btn");
       if (!btn) return;
-      // Hide on the tip — rewinding there is a no-op / errors on the wire.
-      btn.hidden = users.length <= 1 || i === users.length - 1;
+      // Hide later tips only — first bubble (i === 0) always keeps Rewind.
+      btn.hidden = i === users.length - 1 && i > 0;
     });
   }
 

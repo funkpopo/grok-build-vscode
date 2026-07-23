@@ -60,14 +60,16 @@ Rewinding to the current tip errors:
 
 | UI | Flow |
 |---|---|
-| **User bubble → Rewind** (primary) | Hover a user message → action row (Copy · Rewind · time) → confirm → execute → reload |
-| Gear → *Rewind conversation* / `Grok: Rewind Conversation` | QuickPick fallback (newest first, tip excluded) |
+| **User bubble → Rewind** (primary) | Hover user message → action row (Copy · Rewind · time) → confirm → execute → reload |
+| `Grok: Rewind Conversation` (command palette only) | QuickPick fallback (newest first, tip excluded) — **not** in the gear menu |
 
 **Bubble index → wire index:** the hidden plan-mode primer is a real rewind point
 (`prompt_index` 0 typically) but never a bubble. `userFacingRewindPoints` /
 `resolveUserBubbleRewind` strip primer / system-reminder / marker-only plan
-verdicts so bubble `N` maps to the Nth user-facing point. The latest bubble
-hides its Rewind button (tip is not a valid target).
+verdicts so bubble `N` maps to the Nth user-facing point. The **first** user
+bubble always shows Rewind: when it is also the tip (sole turn), execute uses
+the previous checkpoint (`undoingTip`, usually the primer) so the turn can still
+be discarded; later tips hide the button.
 
 Pure helpers: `src/rewind.ts`. ACP: `AcpClient.listRewindPoints` / `executeRewind`.
 
@@ -75,4 +77,28 @@ Pure helpers: `src/rewind.ts`. ACP: `AcpClient.listRewindPoints` / `executeRewin
 
 - Fork (#48) branches **conversation only** — rewind is the complementary feature that restores **file** snapshots.
 - After compact, rewinding *before* the compaction checkpoint can fail ("Try rewinding to a prompt after the compaction point instead") — surface `error` as-is.
-- Probes: `research/rewind-probe.cjs`, `research/rewind-execute-probe.cjs`.
+- Probes: `research/rewind-probe.cjs`, `research/rewind-execute-probe.cjs`, `research/rewind-e2e-probe.cjs`.
+
+## File restore: CLI delete gap (0.2.111)
+
+On-disk `rewind_points.jsonl` rows carry:
+
+```jsonc
+{
+  "prompt_index": 1,
+  "file_snapshots": { "created.txt": { "path": "created.txt", "content": null } },  // pre-turn
+  "after_snapshots": { "created.txt": { "path": "created.txt", "content": "NEW\n" } }
+}
+```
+
+`content: null` means the file **did not exist** before the turn. Execute restores
+modified files via ACP `fs/write_text_file`, lists new files in `reverted_files`,
+returns `success: true` — but **never deletes** null-content paths. Disk keeps the
+new file. Conversation truncate still works; `rewind_points.jsonl` is **not**
+trimmed on execute (later points remain readable for a client backstop).
+
+**Extension backstop** (`computeRewindRestoreActions` + `applyRewindFileRestore` in
+`sidebar.ts`): after a successful execute, re-read `rewind_points.jsonl`, for each
+file first touched by a later turn write the pre-snapshot body or `unlink` when
+`content` is null, then revert/close open editors so dirty buffers can't re-save
+the discarded edits.

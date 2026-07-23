@@ -8,8 +8,14 @@ import {
   selectableRewindPoints,
   userFacingRewindPoints,
   resolveUserBubbleRewind,
+  previousRewindPoint,
   isHiddenRewindPoint,
   rewindConfirmMessage,
+  parseRewindPointsJsonl,
+  parseRewindDiskPoint,
+  computeRewindRestoreActions,
+  resolveRewindWorkspacePath,
+  summarizeRewindRestoreActions,
   REWIND_MODES,
 } from "../src/rewind";
 
@@ -214,19 +220,128 @@ describe("userFacingRewindPoints / resolveUserBubbleRewind", () => {
   it("maps bubble index past the primer to the wire prompt_index", () => {
     const facing = userFacingRewindPoints(all);
     expect(facing.map((p) => p.promptIndex)).toEqual([1, 2, 3]);
-    expect(resolveUserBubbleRewind(all, 0)?.promptIndex).toBe(1);
-    expect(resolveUserBubbleRewind(all, 1)?.promptIndex).toBe(2);
+    const r0 = resolveUserBubbleRewind(all, 0);
+    expect(r0?.execute.promptIndex).toBe(1);
+    expect(r0?.bubble.promptIndex).toBe(1);
+    expect(r0?.undoingTip).toBe(false);
+    expect(resolveUserBubbleRewind(all, 1)?.execute.promptIndex).toBe(2);
   });
 
-  it("returns null for the tip bubble and out-of-range", () => {
-    expect(resolveUserBubbleRewind(all, 2)).toBeNull(); // tip
+  it("returns null for a later tip bubble and out-of-range", () => {
+    expect(resolveUserBubbleRewind(all, 2)).toBeNull(); // tip, not first-only
     expect(resolveUserBubbleRewind(all, 99)).toBeNull();
     expect(resolveUserBubbleRewind(all, -1)).toBeNull();
   });
 
+  it("first sole user message undoes via the previous checkpoint (primer)", () => {
+    const sole = [primer, u0];
+    const r = resolveUserBubbleRewind(sole, 0);
+    expect(r?.undoingTip).toBe(true);
+    expect(r?.bubble.promptIndex).toBe(1);
+    expect(r?.execute.promptIndex).toBe(0); // primer
+    expect(previousRewindPoint(sole, 1)?.promptIndex).toBe(0);
+  });
+
   it("works when there is no primer", () => {
     const bare = [u0, u1].map((p, i) => ({ ...p, promptIndex: i }));
-    expect(resolveUserBubbleRewind(bare, 0)?.promptIndex).toBe(0);
+    expect(resolveUserBubbleRewind(bare, 0)?.execute.promptIndex).toBe(0);
     expect(resolveUserBubbleRewind(bare, 1)).toBeNull();
+    // Sole message with no prior checkpoint → can't execute.
+    expect(resolveUserBubbleRewind([{ ...u0, promptIndex: 0 }], 0)).toBeNull();
+  });
+
+  it("confirm copy distinguishes undo-tip vs rewind-to", () => {
+    const undo = rewindConfirmMessage(u0, "all", { undoingTip: true });
+    expect(undo).toMatch(/Discard this turn/i);
+    const to = rewindConfirmMessage(u0, "all");
+    expect(to).toMatch(/Rewind to this message/i);
+  });
+});
+
+describe("disk snapshot restore plan (CLI delete backstop)", () => {
+  const jsonl = [
+    JSON.stringify({
+      prompt_index: 0,
+      file_snapshots: {},
+      after_snapshots: {},
+    }),
+    JSON.stringify({
+      prompt_index: 1,
+      file_snapshots: {
+        "created.txt": { path: "created.txt", content: null, captured_at: "t" },
+        "seed.txt": { path: "seed.txt", content: "v1\n", captured_at: "t" },
+      },
+      after_snapshots: {
+        "created.txt": { path: "created.txt", content: "NEWFILE\n", captured_at: "t" },
+        "seed.txt": { path: "seed.txt", content: "V2\n", captured_at: "t" },
+      },
+    }),
+    JSON.stringify({
+      prompt_index: 2,
+      file_snapshots: {
+        "seed.txt": { path: "seed.txt", content: "V2\n", captured_at: "t" },
+        "other.ts": { path: "other.ts", content: "a", captured_at: "t" },
+      },
+      after_snapshots: {
+        "seed.txt": { path: "seed.txt", content: "V3\n", captured_at: "t" },
+        "other.ts": { path: "other.ts", content: "b", captured_at: "t" },
+      },
+    }),
+  ].join("\n");
+
+  it("parses rewind_points.jsonl including null content", () => {
+    const pts = parseRewindPointsJsonl(jsonl);
+    expect(pts).toHaveLength(3);
+    expect(pts[1].fileSnapshots["created.txt"].content).toBeNull();
+    expect(pts[1].fileSnapshots["seed.txt"].content).toBe("v1\n");
+    expect(pts[1].afterSnapshots["created.txt"].content).toBe("NEWFILE\n");
+  });
+
+  it("rewinding to baseline deletes new files and restores prior content", () => {
+    const pts = parseRewindPointsJsonl(jsonl);
+    const actions = computeRewindRestoreActions(pts, 0);
+    // earliest later point is #1: created→delete, seed→v1
+    // point #2's seed is skipped (already seen); other.ts added from #2
+    expect(actions).toEqual([
+      { kind: "delete", path: "created.txt" },
+      { kind: "write", path: "other.ts", content: "a" },
+      { kind: "write", path: "seed.txt", content: "v1\n" },
+    ]);
+    const sum = summarizeRewindRestoreActions(actions);
+    expect(sum.deleted).toBe(1);
+    expect(sum.written).toBe(2);
+  });
+
+  it("rewinding to turn 1 only undoes turn 2+", () => {
+    const pts = parseRewindPointsJsonl(jsonl);
+    const actions = computeRewindRestoreActions(pts, 1);
+    // created.txt was born in turn 1 — keep it (not in later pre-snaps as first touch)
+    expect(actions).toEqual([
+      { kind: "write", path: "other.ts", content: "a" },
+      { kind: "write", path: "seed.txt", content: "V2\n" },
+    ]);
+  });
+
+  it("rewinding to tip yields no file actions", () => {
+    const pts = parseRewindPointsJsonl(jsonl);
+    expect(computeRewindRestoreActions(pts, 2)).toEqual([]);
+    expect(computeRewindRestoreActions(pts, 99)).toEqual([]);
+  });
+
+  it("treats missing content as null (did not exist)", () => {
+    const p = parseRewindDiskPoint({
+      prompt_index: 0,
+      file_snapshots: { "x.txt": { path: "x.txt", captured_at: "t" } },
+    });
+    expect(p?.fileSnapshots["x.txt"].content).toBeNull();
+  });
+
+  it("resolveRewindWorkspacePath joins relative and keeps absolute", () => {
+    expect(resolveRewindWorkspacePath("D:\\proj", "src\\a.ts").replace(/\//g, "\\")).toBe(
+      "D:\\proj\\src\\a.ts",
+    );
+    expect(resolveRewindWorkspacePath("/tmp/w", "a/b.txt")).toBe("/tmp/w/a/b.txt");
+    expect(resolveRewindWorkspacePath("/tmp/w", "/abs/x")).toBe("/abs/x");
+    expect(resolveRewindWorkspacePath("D:\\proj", "C:\\other\\f.txt")).toBe("C:\\other\\f.txt");
   });
 });

@@ -105,6 +105,12 @@ import {
   rewindConfirmMessage,
   selectableRewindPoints,
   userFacingRewindPoints,
+  parseRewindPointsJsonl,
+  computeRewindRestoreActions,
+  resolveRewindWorkspacePath,
+  summarizeRewindRestoreActions,
+  type RewindPoint,
+  type RewindRestoreAction,
 } from "./rewind";
 import {
   parseRunProgressUpdate,
@@ -1086,9 +1092,10 @@ See design doc for the full state machine diagram.`;
   /**
    * Rewind (P2-9) — roll the conversation (and file snapshots) back to an
    * earlier user prompt. Primary UX: the Rewind button on a user bubble
-   * (`userBubbleIndex`). Fallback: gear / command palette opens a QuickPick.
-   * Execute always uses `force:true` + mode `all`; then reloads the same
-   * session so the chat matches the truncated history.
+   * (`userBubbleIndex`). Fallback: command palette `Grok: Rewind Conversation`
+   * opens a QuickPick (not in the gear menu). Execute always uses `force:true`
+   * + mode `all`; then reloads the same session so the chat matches the
+   * truncated history.
    */
   async rewindFocusedSession(userBubbleIndex?: number): Promise<void> {
     const session = this.focused;
@@ -1111,23 +1118,32 @@ See design doc for the full state machine diagram.`;
         );
       }
 
-      let target: ReturnType<typeof resolveUserBubbleRewind> = null;
+      let executeTarget: RewindPoint;
+      let confirmPoint: RewindPoint;
+      let undoingTip = false;
+
       if (typeof userBubbleIndex === "number") {
-        // Bubble button: map visible user bubble → wire prompt_index (skips primer).
-        target = resolveUserBubbleRewind(points, userBubbleIndex);
-        if (!target) {
+        // Bubble button: map visible user bubble → wire execute target.
+        // First (sole) user message undoes via the previous checkpoint (primer).
+        const resolved = resolveUserBubbleRewind(points, userBubbleIndex);
+        if (!resolved) {
           return void vscode.window.showInformationMessage(
-            "Can't rewind to this message — it's the latest turn, or the checkpoint is unavailable.",
+            "Can't rewind to this message — the checkpoint is unavailable.",
           );
         }
+        executeTarget = resolved.execute;
+        confirmPoint = resolved.bubble;
+        undoingTip = resolved.undoingTip;
       } else {
-        // Gear / command palette: pick among user-facing points that aren't the tip.
+        // Command palette: pick among user-facing points that aren't the tip.
+        // A sole first message still has a bubble Rewind (undo tip); the
+        // QuickPick only lists multi-turn targets.
         const facing = userFacingRewindPoints(points);
         const selectable = selectableRewindPoints(facing.length ? facing : points);
         if (selectable.length === 0) {
           return void vscode.window.showInformationMessage(
             facing.length <= 1
-              ? "Only one message so far — hover an earlier user message and click Rewind."
+              ? "Only one message so far — hover it and click Rewind to discard the turn."
               : "No rewind points available.",
           );
         }
@@ -1146,18 +1162,19 @@ See design doc for the full state machine diagram.`;
           matchOnDetail: true,
         });
         if (!pick) return;
-        target = pick.point;
+        executeTarget = pick.point;
+        confirmPoint = pick.point;
       }
 
       const ok = await vscode.window.showWarningMessage(
-        rewindConfirmMessage(target, "all"),
+        rewindConfirmMessage(confirmPoint, "all", { undoingTip }),
         { modal: true },
         "Rewind",
       );
       if (ok !== "Rewind") return;
 
       const result = await session.client.executeRewind({
-        targetPromptIndex: target.promptIndex,
+        targetPromptIndex: executeTarget.promptIndex,
         mode: "all",
       });
       if (result === "unsupported") {
@@ -1170,26 +1187,137 @@ See design doc for the full state machine diagram.`;
         return void vscode.window.showErrorMessage(err);
       }
 
-      const nFiles = result.revertedFiles.length;
+      // Client-side file restore backstop: the CLI reports success + lists
+      // files in reverted_files but does not delete paths whose snapshot
+      // content is null (new files). Re-apply from rewind_points.jsonl and
+      // sync open editors so the workspace matches the conversation.
+      const cwd = session.cwd || this.workspaceRoot();
+      const restore = this.applyRewindFileRestore(
+        cwd,
+        session.activeSessionId,
+        result.targetPromptIndex,
+      );
+      const nFiles = Math.max(result.revertedFiles.length, restore.paths.length);
       this.output.appendLine(
         `[rewind] → prompt #${result.targetPromptIndex} (mode=${result.mode}, files=${nFiles}` +
+          `, clientWrite=${restore.written}, clientDelete=${restore.deleted}` +
+          (restore.errors.length ? `, errors=${restore.errors.length}` : "") +
           (typeof userBubbleIndex === "number" ? `, bubble=${userBubbleIndex}` : "") +
           `)`,
       );
+      if (restore.errors.length) {
+        for (const e of restore.errors.slice(0, 5)) {
+          this.output.appendLine(`[rewind] restore error: ${e}`);
+        }
+      }
+      await this.syncEditorsAfterRewind(cwd, restore.actions);
+
       const resumeId = session.activeSessionId;
       this.emit(session, { type: "clearMessages" });
       await this.startSession(resumeId);
       const fileNote =
         nFiles > 0
-          ? ` Restored ${nFiles} file${nFiles === 1 ? "" : "s"}.`
+          ? ` Restored ${nFiles} file${nFiles === 1 ? "" : "s"}${
+              restore.deleted > 0
+                ? ` (${restore.deleted} removed)`
+                : ""
+            }.`
           : result.mode === "conversation_only"
             ? ""
             : " (no file changes at that point)";
+      const conflictNote =
+        result.conflicts.length > 0
+          ? ` ${result.conflicts.length} conflict(s) reported by CLI — check the Output panel.`
+          : restore.errors.length > 0
+            ? ` Some files could not be fully restored — see Output → Grok.`
+            : "";
       void vscode.window.showInformationMessage(
-        `Rewound to this message.${fileNote}`,
+        `Rewound to this message.${fileNote}${conflictNote}`,
       );
     } catch (e: any) {
       void vscode.window.showErrorMessage(`Rewind failed: ${e?.message ?? e}`);
+    }
+  }
+
+  /**
+   * Re-apply file snapshots from the session's `rewind_points.jsonl` after a
+   * successful `_x.ai/rewind/execute`. Pure plan comes from
+   * `computeRewindRestoreActions`; this only does the I/O.
+   */
+  private applyRewindFileRestore(
+    cwd: string,
+    sessionId: string,
+    targetPromptIndex: number,
+  ): {
+    actions: RewindRestoreAction[];
+    written: number;
+    deleted: number;
+    paths: string[];
+    errors: string[];
+  } {
+    const empty = { actions: [] as RewindRestoreAction[], written: 0, deleted: 0, paths: [] as string[], errors: [] as string[] };
+    try {
+      const grokHome = resolveGrokHome(process.env);
+      const rpPath = path.join(sessionsDirFor(grokHome, cwd), sessionId, "rewind_points.jsonl");
+      if (!fs.existsSync(rpPath)) return empty;
+      const points = parseRewindPointsJsonl(fs.readFileSync(rpPath, "utf8"));
+      const actions = computeRewindRestoreActions(points, targetPromptIndex);
+      const errors: string[] = [];
+      for (const action of actions) {
+        const abs = resolveRewindWorkspacePath(cwd, action.path);
+        try {
+          if (action.kind === "delete") {
+            if (fs.existsSync(abs)) fs.unlinkSync(abs);
+          } else {
+            fs.mkdirSync(path.dirname(abs), { recursive: true });
+            fs.writeFileSync(abs, action.content, "utf8");
+          }
+        } catch (e: any) {
+          errors.push(`${action.kind} ${action.path}: ${e?.message ?? e}`);
+        }
+      }
+      const sum = summarizeRewindRestoreActions(actions);
+      return { actions, written: sum.written, deleted: sum.deleted, paths: sum.paths, errors };
+    } catch (e: any) {
+      return { ...empty, errors: [String(e?.message ?? e)] };
+    }
+  }
+
+  /**
+   * After rewind restores disk, open editors still hold the pre-rewind
+   * buffer (and a dirty save would re-apply the discarded edits). Revert
+   * open docs for written paths; close (without saving) docs for deleted paths.
+   */
+  private async syncEditorsAfterRewind(
+    cwd: string,
+    actions: RewindRestoreAction[],
+  ): Promise<void> {
+    if (actions.length === 0) return;
+    const norm = (p: string) => path.normalize(p).toLowerCase();
+    const byAbs = new Map<string, RewindRestoreAction>();
+    for (const a of actions) {
+      byAbs.set(norm(resolveRewindWorkspacePath(cwd, a.path)), a);
+    }
+    for (const doc of vscode.workspace.textDocuments) {
+      if (doc.uri.scheme !== "file") continue;
+      const action = byAbs.get(norm(doc.uri.fsPath));
+      if (!action) continue;
+      try {
+        if (action.kind === "delete") {
+          // Close without saving so a dirty buffer can't recreate the file.
+          await vscode.window.showTextDocument(doc, { preview: true, preserveFocus: true });
+          await vscode.commands.executeCommand("workbench.action.revertAndCloseActiveEditor");
+        } else if (doc.isDirty || doc.getText() !== action.content) {
+          // Reload from disk (our write already landed). Prefer the built-in
+          // revert so undo history resets to the restored content.
+          await vscode.window.showTextDocument(doc, { preview: true, preserveFocus: true });
+          await vscode.commands.executeCommand("workbench.action.files.revert");
+        }
+      } catch (e: any) {
+        this.output.appendLine(
+          `[rewind] editor sync failed for ${action.path}: ${e?.message ?? e}`,
+        );
+      }
     }
   }
 

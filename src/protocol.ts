@@ -228,7 +228,7 @@ export type WebviewMsg =
   | { type: "removeWorktree" }
   // Rewind UI (P2-9): truncate chat + restore files.
   // `userBubbleIndex` (0-based among visible user bubbles) comes from the
-  // per-message Rewind button; omit it for the gear QuickPick path.
+  // per-message Rewind button; omit it for the command-palette QuickPick path.
   | { type: "rewindSession"; userBubbleIndex?: number }
   // Workflow card controls (P2-10): pause / resume / stop by display name.
   | { type: "workflowControl"; action: "pause" | "resume" | "stop"; displayName: string };

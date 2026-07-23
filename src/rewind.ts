@@ -193,32 +193,88 @@ export function userFacingRewindPoints(points: RewindPoint[]): RewindPoint[] {
 }
 
 /**
- * Map a 0-based visible user-bubble index to a rewind target.
- * Returns null when the index is out of range or the point is the conversation
- * tip (nothing after it to discard).
+ * Result of mapping a visible user bubble to a wire rewind execute target.
  *
- * `allPoints` is the full list from `/points` (primer included) so tip detection
- * uses the real max `prompt_index`.
+ * - **to bubble** (`undoingTip: false`): keep this message; discard later turns.
+ * - **undo tip** (`undoingTip: true`): the first user message is alone (it *is*
+ *   the tip) — execute the previous checkpoint (often the hidden primer) so the
+ *   turn can still be rolled back. Confirm copy uses `bubble`, not `execute`.
+ */
+export interface UserBubbleRewind {
+  /** Wire target for `_x.ai/rewind/execute`. */
+  execute: RewindPoint;
+  /** The user-facing bubble the user clicked (confirm preview). */
+  bubble: RewindPoint;
+  undoingTip: boolean;
+}
+
+/**
+ * Map a 0-based visible user-bubble index to a rewind target.
+ *
+ * Non-tip bubbles → rewind *to* that message. The first user message always
+ * has a button: when it is also the tip (sole user turn), map to the previous
+ * wire point (primer etc.) so the turn can still be undone. Later tips return
+ * null (nothing after them to discard, and undo-tip is first-only).
+ *
+ * `allPoints` is the full list from `/points` (primer included) so tip
+ * detection uses the real max `prompt_index`.
  */
 export function resolveUserBubbleRewind(
   allPoints: RewindPoint[],
   userBubbleIndex: number,
-): RewindPoint | null {
+): UserBubbleRewind | null {
   if (!Number.isInteger(userBubbleIndex) || userBubbleIndex < 0) return null;
-  const facing = userFacingRewindPoints(allPoints);
-  const point = facing[userBubbleIndex];
-  if (!point) return null;
   if (allPoints.length === 0) return null;
+  const facing = userFacingRewindPoints(allPoints);
+  const bubble = facing[userBubbleIndex];
+  if (!bubble) return null;
   const maxIdx = Math.max(...allPoints.map((p) => p.promptIndex));
-  // Tip of the whole conversation — execute would fail with "current is N".
-  if (point.promptIndex >= maxIdx) return null;
-  return point;
+  if (bubble.promptIndex < maxIdx) {
+    // Keep this message; discard everything after it.
+    return { execute: bubble, bubble, undoingTip: false };
+  }
+  // Tip. Only the first user bubble (sole turn) may undo via the prior checkpoint.
+  if (userBubbleIndex !== 0 || facing.length !== 1) return null;
+  const prev = previousRewindPoint(allPoints, bubble.promptIndex);
+  if (!prev) return null;
+  return { execute: prev, bubble, undoingTip: true };
+}
+
+/** Nearest rewind point strictly before `promptIndex`, or null. */
+export function previousRewindPoint(
+  allPoints: RewindPoint[],
+  promptIndex: number,
+): RewindPoint | null {
+  let best: RewindPoint | null = null;
+  for (const p of allPoints) {
+    if (p.promptIndex >= promptIndex) continue;
+    if (!best || p.promptIndex > best.promptIndex) best = p;
+  }
+  return best;
 }
 
 /** Confirm dialog body for a chosen target. */
-export function rewindConfirmMessage(p: RewindPoint, mode: RewindMode = "all"): string {
+export function rewindConfirmMessage(
+  p: RewindPoint,
+  mode: RewindMode = "all",
+  opts?: { undoingTip?: boolean },
+): string {
   const preview = (p.promptPreview || "(empty)").replace(/\s+/g, " ").trim();
   const clipped = preview.length > 120 ? preview.slice(0, 117) + "…" : preview;
+  if (opts?.undoingTip) {
+    const scope =
+      mode === "conversation_only"
+        ? "This turn will be discarded from the conversation."
+        : mode === "files_only" || mode === "code_only"
+          ? "Files will be restored to their snapshot before this turn; conversation stays."
+          : "This turn will be discarded, and files restored to their snapshot before it.";
+    return (
+      `Discard this turn?\n\n` +
+      `"${clipped}"\n\n` +
+      `${scope}\n` +
+      `This cannot be undone (unless you have the changes in git).`
+    );
+  }
   const scope =
     mode === "conversation_only"
       ? "Conversation history after this turn will be discarded."
@@ -231,4 +287,180 @@ export function rewindConfirmMessage(p: RewindPoint, mode: RewindMode = "all"): 
     `${scope}\n` +
     `This cannot be undone (unless you have the changes in git).`
   );
+}
+
+// ─── Disk snapshot restore backstop ──────────────────────────────────────────
+//
+// The CLI's `_x.ai/rewind/execute` restores modified files via ACP
+// `fs/write_text_file`, but **does not delete** files whose pre-turn snapshot
+// is `content: null` (file did not exist). It still lists them in
+// `reverted_files` and returns `success: true` — so the UI says "Restored N
+// files" while new files remain on disk. Probe-confirmed on 0.2.111
+// (`research/rewind-e2e-probe.cjs`).
+//
+// The on-disk `rewind_points.jsonl` carries the authoritative pre/post
+// snapshots. After a successful execute we re-apply the plan client-side:
+// write restored content, delete null-content paths, then sync open editors.
+
+/** One file entry inside a disk rewind point's snapshot maps. */
+export interface RewindDiskFileSnap {
+  /** Relative (or absolute) path as stored on the wire. */
+  path: string;
+  /** File body before/after the turn. `null` = file did not exist. */
+  content: string | null;
+}
+
+/** One line of `rewind_points.jsonl` (subset we need for restore). */
+export interface RewindDiskPoint {
+  promptIndex: number;
+  /** Pre-turn snapshots (key = relative path as stored by the CLI). */
+  fileSnapshots: Record<string, RewindDiskFileSnap>;
+  /** Post-turn snapshots (unused for restore plan; kept for completeness). */
+  afterSnapshots: Record<string, RewindDiskFileSnap>;
+}
+
+/** A single filesystem action to bring the workspace back to the target turn. */
+export type RewindRestoreAction =
+  | { kind: "write"; path: string; content: string }
+  | { kind: "delete"; path: string };
+
+function parseDiskFileSnap(key: string, raw: unknown): RewindDiskFileSnap | null {
+  const r = asRecord(raw);
+  if (!r) return null;
+  const p = typeof r.path === "string" && r.path ? r.path : key;
+  // Explicit null means "did not exist". Missing content treated as null too
+  // (older/partial rows). A real empty file is content: "".
+  if (!("content" in r) || r.content === null || r.content === undefined) {
+    return { path: p, content: null };
+  }
+  if (typeof r.content !== "string") return null;
+  return { path: p, content: r.content };
+}
+
+function parseDiskSnapMap(raw: unknown): Record<string, RewindDiskFileSnap> {
+  const r = asRecord(raw);
+  if (!r) return {};
+  const out: Record<string, RewindDiskFileSnap> = {};
+  for (const [k, v] of Object.entries(r)) {
+    const snap = parseDiskFileSnap(k, v);
+    if (snap) out[k] = snap;
+  }
+  return out;
+}
+
+/** Parse one `rewind_points.jsonl` line (or object). */
+export function parseRewindDiskPoint(raw: unknown): RewindDiskPoint | null {
+  const r = asRecord(raw);
+  if (!r) return null;
+  const promptIndex =
+    typeof r.prompt_index === "number"
+      ? r.prompt_index
+      : typeof r.promptIndex === "number"
+        ? r.promptIndex
+        : null;
+  if (promptIndex == null || !Number.isFinite(promptIndex) || promptIndex < 0) return null;
+  return {
+    promptIndex,
+    fileSnapshots: parseDiskSnapMap(r.file_snapshots ?? r.fileSnapshots),
+    afterSnapshots: parseDiskSnapMap(r.after_snapshots ?? r.afterSnapshots),
+  };
+}
+
+/** Parse the full `rewind_points.jsonl` file text into disk points. */
+export function parseRewindPointsJsonl(text: string): RewindDiskPoint[] {
+  if (!text || typeof text !== "string") return [];
+  const out: RewindDiskPoint[] = [];
+  for (const line of text.split(/\n+/)) {
+    const t = line.trim();
+    if (!t) continue;
+    try {
+      const p = parseRewindDiskPoint(JSON.parse(t));
+      if (p) out.push(p);
+    } catch {
+      // skip corrupt lines
+    }
+  }
+  return out;
+}
+
+/**
+ * Compute the file restore plan for rewinding *to* `targetPromptIndex`
+ * (keep that turn; discard everything after).
+ *
+ * For each file first touched by a later turn, the pre-turn snapshot on that
+ * earliest later point is the correct restore target:
+ *   - `content: null` → delete the file (it did not exist then)
+ *   - `content: string` → write that body back
+ *
+ * Files only modified at/before the target are left alone.
+ */
+export function computeRewindRestoreActions(
+  points: RewindDiskPoint[],
+  targetPromptIndex: number,
+): RewindRestoreAction[] {
+  if (!Number.isFinite(targetPromptIndex)) return [];
+  const later = points
+    .filter((p) => p.promptIndex > targetPromptIndex)
+    .sort((a, b) => a.promptIndex - b.promptIndex);
+  // path → restore content (null = delete). First (earliest) later point wins.
+  const byPath = new Map<string, string | null>();
+  for (const p of later) {
+    for (const snap of Object.values(p.fileSnapshots)) {
+      const key = snap.path || "";
+      if (!key || byPath.has(key)) continue;
+      byPath.set(key, snap.content);
+    }
+  }
+  const actions: RewindRestoreAction[] = [];
+  for (const [filePath, content] of byPath) {
+    if (content === null) actions.push({ kind: "delete", path: filePath });
+    else actions.push({ kind: "write", path: filePath, content });
+  }
+  // Stable order: deletes first (so a rewrite of the same path later can't
+  // race), then writes — sorted by path within each kind for testability.
+  actions.sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === "delete" ? -1 : 1;
+    return a.path.localeCompare(b.path);
+  });
+  return actions;
+}
+
+/**
+ * Resolve a snapshot path against the session cwd. Absolute paths (incl.
+ * Windows drive letters) pass through; relative paths join the cwd.
+ */
+export function resolveRewindWorkspacePath(cwd: string, snapPath: string): string {
+  if (!snapPath) return cwd;
+  // Absolute POSIX or Windows (C:\…, \\server\share, /tmp/…)
+  if (
+    snapPath.startsWith("/") ||
+    snapPath.startsWith("\\\\") ||
+    /^[A-Za-z]:[\\/]/.test(snapPath)
+  ) {
+    return snapPath;
+  }
+  // Avoid importing node:path here — keep the module pure + browser-safe for
+  // tests. Snapshot paths use `\` on Windows and `/` elsewhere; normalize
+  // separators when joining.
+  const sep = cwd.includes("\\") && !cwd.includes("/") ? "\\" : "/";
+  const rel = snapPath.replace(/[\\/]+/g, sep);
+  const base = cwd.endsWith("\\") || cwd.endsWith("/") ? cwd.slice(0, -1) : cwd;
+  return base + sep + rel;
+}
+
+/** Summarize restore actions for logs / toasts. */
+export function summarizeRewindRestoreActions(actions: RewindRestoreAction[]): {
+  written: number;
+  deleted: number;
+  paths: string[];
+} {
+  let written = 0;
+  let deleted = 0;
+  const paths: string[] = [];
+  for (const a of actions) {
+    paths.push(a.path);
+    if (a.kind === "write") written++;
+    else deleted++;
+  }
+  return { written, deleted, paths };
 }
