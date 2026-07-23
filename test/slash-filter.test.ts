@@ -138,9 +138,17 @@ describe("withExtensionSlashCommands", () => {
       { name: "session-info", description: "Info" },
     ];
     const merged = withExtensionSlashCommands(cmds);
-    expect(merged.map((c) => c.name)).toEqual(["btw", "compact", "session-info"]);
+    expect(merged.map((c) => c.name)).toEqual(["btw", "compact", "doctor", "session-info"]);
     const btw = merged.find((c) => c.name === "btw");
     expect(btw?.description).toMatch(/side question/i);
+  });
+
+  it("injects /doctor when the CLI does not advertise it (P3-20 autocomplete)", () => {
+    const cmds = [{ name: "compact" }];
+    const merged = withExtensionSlashCommands(cmds);
+    const doctor = merged.find((c) => c.name === "doctor");
+    expect(doctor).toBeTruthy();
+    expect(doctor?.description).toMatch(/diagnostic/i);
   });
 
   it("is idempotent when the CLI already advertises btw", () => {
@@ -153,8 +161,9 @@ describe("withExtensionSlashCommands", () => {
     expect(merged.find((c) => c.name === "btw")?.description).toBe("CLI copy");
   });
 
-  it("EXTENSION_SLASH_COMMANDS includes btw", () => {
+  it("EXTENSION_SLASH_COMMANDS includes btw and doctor", () => {
     expect(EXTENSION_SLASH_COMMANDS.some((c) => c.name === "btw")).toBe(true);
+    expect(EXTENSION_SLASH_COMMANDS.some((c) => c.name === "doctor")).toBe(true);
   });
 
   it("prefix filter surfaces btw for /bt and /btw", () => {

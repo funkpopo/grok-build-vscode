@@ -24,7 +24,7 @@
     "promptComplete", "contextUsage", "commandOutput", "expandCommandOutputs", "focusInput", "agentReset", "agentError", "agentEnd", "exit", "setBusy", "summarizing",
     "sessionContext", "clearMessages", "onboarding", "error", "xaiNotification", "subagentUpdate", "runProgress", "sessions",
     "sessionDot", "queuedSends", "steerUnavailable", "usage", "authMethod", "steerByDefault",
-    "btwExchange",
+    "btwExchange", "doctorReport",
   ];
   const WEBVIEW_MESSAGE_TYPES = [
     "ready", "send", "newSession", "cancel", "pickModel", "setMode", "removeChip",
@@ -37,7 +37,7 @@
     "clearAllSessions", "pickFile", "mentionQuery", "addMentionFile", "pasteImage", "voiceStart", "voiceStop",
     "queueSend", "dequeueSend", "clearQueuedSends", "steerSend", "forkSession", "setSteerByDefault",
     "newWorktreeSession", "applyWorktree", "removeWorktree", "rewindSession", "workflowControl",
-    "btwSend",
+    "btwSend", "runDoctor",
   ];
   const HOST_MESSAGE_TYPE_SET = new Set(HOST_MESSAGE_TYPES);
   /** True when `type` is a host->webview message the contract knows about. A
@@ -61,6 +61,18 @@
     const m = t.match(/^\/btw(?:\s+([\s\S]*))?$/i);
     if (!m) return null;
     return { question: (m[1] || "").trim() };
+  }
+
+  // ---- `/doctor` diagnostics (P3-20) ----
+  // Mirror of src/doctor.ts — webview can't import TS. Keep set-equal via tests.
+  // Aliases match the CLI: /doctor, /terminal-setup, /terminal-check, /terminal-info.
+
+  const DOCTOR_SLASH_RE =
+    /^\/(doctor|terminal-setup|terminal-check|terminal-info)(?:\s|$)/i;
+
+  /** True when composer text is a leading doctor slash (any CLI alias). */
+  function isDoctorSlash(text) {
+    return DOCTOR_SLASH_RE.test(String(text || "").trim());
   }
 
   // ---- "@" file mention (composer autocomplete) ----
@@ -710,7 +722,7 @@
     return `Plan mode ${what}. ${how}`;
   }
 
-  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, isBtwSlash, parseBtwSlash, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, planBlockedNoticeText };
+  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, isBtwSlash, parseBtwSlash, isDoctorSlash, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, planBlockedNoticeText };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

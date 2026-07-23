@@ -1103,6 +1103,76 @@ describe("gear menu — Other group + About / Config & debug sub-views", () => {
   });
 });
 
+describe("/doctor report card (P3-20)", () => {
+  it("renders a compact card and expands the report in chat on Show full report", () => {
+    const { window, doc, posted } = bootWebview();
+    dispatch(window, {
+      type: "doctorReport",
+      id: "doctor-test-1",
+      pending: false,
+      summary: "0 issues · 0 recommendations · color truecolor",
+      reportText: "Grok Doctor\n  · all good\n",
+      issues: 0,
+      recommendations: 0,
+    });
+
+    const card = doc.querySelector(".doctor-card") as HTMLElement;
+    expect(card).toBeTruthy();
+    expect(card.classList.contains("doctor-done")).toBe(true);
+    expect(card.querySelector(".doctor-summary")?.textContent).toMatch(/0 issues/);
+
+    const pre = card.querySelector(".doctor-report") as HTMLElement;
+    expect(pre).toBeTruthy();
+    expect(pre.hidden).toBe(true);
+    expect(pre.textContent).toMatch(/all good/);
+
+    const showBtn = card.querySelector(".doctor-show-logs") as HTMLElement;
+    expect(showBtn?.textContent).toBe("Show full report");
+    click(window, showBtn);
+
+    // In-chat expand is the visible feedback; Output channel is opened too.
+    expect(pre.hidden).toBe(false);
+    expect(showBtn.textContent).toBe("Collapse");
+    expect(types(posted)).toContain("showLogs");
+
+    // Toggle collapses without a second showLogs requirement, but a second
+    // click still re-posts showLogs so the Panel stays reachable.
+    click(window, showBtn);
+    expect(pre.hidden).toBe(true);
+    expect(showBtn.textContent).toBe("Show full report");
+    expect(types(posted).filter((t) => t === "showLogs").length).toBe(2);
+  });
+
+  it("still posts showLogs when there is no reportText body", () => {
+    const { window, doc, posted } = bootWebview();
+    dispatch(window, {
+      type: "doctorReport",
+      id: "doctor-test-2",
+      pending: false,
+      summary: "Diagnostics complete.",
+    });
+    const showBtn = doc.querySelector(".doctor-show-logs") as HTMLElement;
+    expect(showBtn).toBeTruthy();
+    expect(doc.querySelector(".doctor-report")).toBeNull();
+    click(window, showBtn);
+    expect(types(posted)).toContain("showLogs");
+  });
+
+  it("renders a failed card without a Show full report action", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "doctorReport",
+      id: "doctor-test-3",
+      pending: false,
+      error: "Grok Build CLI not found.",
+    });
+    const card = doc.querySelector(".doctor-card") as HTMLElement;
+    expect(card.classList.contains("doctor-failed")).toBe(true);
+    expect(card.querySelector(".doctor-summary")?.textContent).toMatch(/not found/);
+    expect(card.querySelector(".doctor-show-logs")).toBeNull();
+  });
+});
+
 describe("Auto accept mode label (#25 rename)", () => {
   it("labels the auto-approve mode 'Auto accept' and keeps YOLO only in the description", () => {
     const { window, doc } = bootWebview();

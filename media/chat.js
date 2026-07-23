@@ -150,6 +150,7 @@
     runProgressCards: new Map(),
     // `/btw` side-question cards (P3-16) — keyed by host-issued exchange id.
     btwCards: new Map(),
+    doctorCards: new Map(),
     // The current turn's agent-message footer (copy + timestamp). Only the
     // turn's LAST narration segment keeps one — see addMessage.
     turnAgentActionsEl: null,
@@ -408,7 +409,7 @@
 
   // ---------- markdown ----------
 
-  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, isBtwSlash, getMentionQuery, applyMentionPick } = globalThis.GrokWebviewHelpers;
+  const { looksLikeFileRef, formatRelativeTime, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, isKnownHostMessage, isBtwSlash, isDoctorSlash, getMentionQuery, applyMentionPick } = globalThis.GrokWebviewHelpers;
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -1491,6 +1492,10 @@
       vscode.postMessage({ type: "runMcpList" });
       closePopovers();
     });
+    addGearItem("<span>Run doctor diagnostics</span>", () => {
+      vscode.postMessage({ type: "runDoctor" });
+      closePopovers();
+    });
     addGearItem("<span>Show extension logs</span>", () => {
       vscode.postMessage({ type: "showLogs" });
       closePopovers();
@@ -1867,6 +1872,7 @@
     state.subagentCards.clear();
     state.runProgressCards.clear();
     state.btwCards.clear();
+    state.doctorCards.clear();
     // Question/restored-card maps too, or a new session's tool updates could
     // attach to the previous session's (now-detached) cards by toolCallId.
     state.questionToolCalls.clear();
@@ -3691,6 +3697,97 @@
     scrollToBottom();
   }
 
+  // ---------- `/doctor` diagnostics (P3-20) ----------
+  // Host runs standalone `grok doctor --json`, writes full report to the Grok
+  // Output channel, and posts a compact card here. Not a main-turn bubble.
+
+  function applyDoctorReport(msg) {
+    if (!msg || !msg.id) return;
+    clearWelcome();
+    const id = String(msg.id);
+    let el = state.doctorCards.get(id);
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "doctor-card";
+      el.dataset.doctorId = id;
+      el.innerHTML =
+        `<div class="doctor-row">` +
+          `<span class="doctor-badge" title="Environment diagnostics (grok doctor)">Doctor</span>` +
+          `<span class="doctor-sep">·</span>` +
+          BLINK_DOTS +
+          `<span class="doctor-status"></span>` +
+        `</div>` +
+        `<div class="doctor-summary"></div>` +
+        `<div class="doctor-actions" hidden></div>`;
+      state.doctorCards.set(id, el);
+      messagesEl.appendChild(el);
+      scrollToBottom(true);
+    }
+
+    const status = el.querySelector(".doctor-status");
+    const dots = el.querySelector(".blink-dots");
+    const summaryEl = el.querySelector(".doctor-summary");
+    const actions = el.querySelector(".doctor-actions");
+    const pending = !!msg.pending && !msg.error && !msg.summary && !msg.reportText;
+
+    el.classList.toggle("doctor-pending", pending);
+    el.classList.toggle("doctor-failed", !!msg.error);
+    el.classList.toggle("doctor-has-issues", !msg.error && (Number(msg.issues) > 0 || Number(msg.recommendations) > 0));
+    el.classList.toggle("doctor-done", !pending && !msg.error);
+
+    if (dots) dots.hidden = !pending;
+    if (pending) {
+      status.textContent = "running…";
+      summaryEl.textContent = "";
+      actions.hidden = true;
+      actions.innerHTML = "";
+    } else if (msg.error) {
+      status.textContent = "failed";
+      summaryEl.textContent = String(msg.error);
+      actions.hidden = true;
+      actions.innerHTML = "";
+    } else {
+      status.textContent = "";
+      summaryEl.textContent = msg.summary || "Diagnostics complete.";
+      // "Show full report" must give in-chat feedback first. Opening only the
+      // Output panel is easy to miss (especially with Grok in the secondary
+      // side bar), which looked like a dead click. Expand the report here when
+      // we have it; always also ask the host to reveal the Grok Output channel
+      // (full log, copyable).
+      actions.hidden = false;
+      actions.innerHTML = "";
+      let reportPre = null;
+      if (msg.reportText) {
+        reportPre = document.createElement("pre");
+        reportPre.className = "doctor-report";
+        reportPre.hidden = true;
+        reportPre.textContent = msg.reportText;
+      }
+      const showBtn = document.createElement("button");
+      showBtn.type = "button";
+      showBtn.className = "doctor-show-logs";
+      showBtn.textContent = "Show full report";
+      showBtn.title = reportPre
+        ? "Expand the report in chat and open the Grok Output channel"
+        : "Open the Grok Output channel (full doctor report)";
+      showBtn.onclick = (e) => {
+        e.stopPropagation();
+        if (reportPre) {
+          const opening = reportPre.hidden;
+          reportPre.hidden = !opening;
+          showBtn.textContent = opening ? "Collapse" : "Show full report";
+          if (opening) scrollToBottom();
+        }
+        // Always reveal Output so the full log (and any post-run appends) is
+        // reachable even when the in-chat body is already open.
+        vscode.postMessage({ type: "showLogs" });
+      };
+      actions.appendChild(showBtn);
+      if (reportPre) actions.appendChild(reportPre);
+    }
+    scrollToBottom();
+  }
+
   // ---------- Workflow / Goal / Deep-research progress cards (P2-10) ----------
   // Host normalizes `_x.ai/session_notification` workflow_updated / goal_updated
   // into a stable shape; we upsert one card per id and stop the dots on done.
@@ -5177,6 +5274,15 @@
       hideMention();
       return;
     }
+    // `/doctor` diagnostics (P3-20): host runs standalone CLI, not a main turn.
+    if (text && (typeof isDoctorSlash === "function" ? isDoctorSlash(text) : /^\/(doctor|terminal-setup|terminal-check|terminal-info)(?:\s|$)/i.test(text))) {
+      vscode.postMessage({ type: "runDoctor" });
+      input.value = "";
+      renderInputHighlight();
+      slashPopover.hidden = true;
+      hideMention();
+      return;
+    }
     state.busy = true;
     updateSendButton();
     state.activeAgentEl = null;
@@ -5325,6 +5431,11 @@
       vscode.postMessage({ type: "btwSend", text: t });
       return;
     }
+    // `/doctor` (P3-20) — host diagnostics, not a main turn.
+    if (typeof isDoctorSlash === "function" ? isDoctorSlash(t) : /^\/(doctor|terminal-setup|terminal-check|terminal-info)(?:\s|$)/i.test(t)) {
+      vscode.postMessage({ type: "runDoctor" });
+      return;
+    }
     state.busy = true;
     updateSendButton();
     state.activeAgentEl = null;
@@ -5355,6 +5466,10 @@
   function queueOutgoing(text) {
     if (typeof isBtwSlash === "function" ? isBtwSlash(text) : /^\/btw(?:\s|$)/i.test(String(text || "").trim())) {
       vscode.postMessage({ type: "btwSend", text });
+      return;
+    }
+    if (typeof isDoctorSlash === "function" ? isDoctorSlash(text) : /^\/(doctor|terminal-setup|terminal-check|terminal-info)(?:\s|$)/i.test(String(text || "").trim())) {
+      vscode.postMessage({ type: "runDoctor" });
       return;
     }
     if (state.steerByDefault && state.steerSupported && state.busy && !state.busyLocked) {
@@ -5916,6 +6031,9 @@
         break;
       case "btwExchange":
         applyBtwExchange(msg);
+        break;
+      case "doctorReport":
+        applyDoctorReport(msg);
         break;
       case "permissionRequest":
         addPermissionCard(msg.req);

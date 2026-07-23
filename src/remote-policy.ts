@@ -65,6 +65,8 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   workflowControl: "propose",
   // `/btw` side question — same class as send/steer (turn control, no FS).
   btwSend: "propose",
+  // `/doctor` spawns the host CLI + opens the local Output channel — host-local.
+  runDoctor: "host-local",
   pasteImage: "propose",
   removeChip: "propose",
   toggleChip: "propose",
@@ -200,6 +202,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   usage: "mirror",
   authMethod: "mirror",
   btwExchange: "mirror",
+  doctorReport: "mirror",
 };
 
 // ---------- media inlining ----------

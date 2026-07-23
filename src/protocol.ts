@@ -167,6 +167,19 @@ export type HostMsg =
       answer?: string;
       pending?: boolean;
       error?: string;
+    }
+  // `/doctor` diagnostics (P3-20) — host runs standalone `grok doctor --json`,
+  // writes the full report to the Output channel, and posts a compact card.
+  // Not a main turn; no session required. `pending` while the subprocess runs.
+  | {
+      type: "doctorReport";
+      id: string;
+      summary?: string;
+      reportText?: string;
+      issues?: number;
+      recommendations?: number;
+      pending?: boolean;
+      error?: string;
     };
 
 /** webview -> host */
@@ -245,7 +258,10 @@ export type WebviewMsg =
   | { type: "workflowControl"; action: "pause" | "resume" | "stop"; displayName: string }
   // `/btw` side question (P3-16): host calls `_x.ai/btw` instead of
   // session/prompt / queue / steer. Works mid-turn without interrupting.
-  | { type: "btwSend"; text: string };
+  | { type: "btwSend"; text: string }
+  // `/doctor` diagnostics (P3-20): host runs `grok doctor --json` (standalone
+  // CLI, not ACP). Works with or without a live session.
+  | { type: "runDoctor" };
 
 // Exhaustive maps: `Record<Union["type"], true>` forces every discriminant to be
 // a key (missing -> tsc error) and forbids any extra (excess-property -> tsc
@@ -267,6 +283,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   xaiNotification: true, subagentUpdate: true, runProgress: true, commandOutput: true, expandCommandOutputs: true, steerByDefault: true,
   focusInput: true, sessions: true, sessionDot: true, queuedSends: true,
   steerUnavailable: true, usage: true, authMethod: true, btwExchange: true,
+  doctorReport: true,
 };
 
 const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
@@ -284,7 +301,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   voiceStop: true, queueSend: true, dequeueSend: true, clearQueuedSends: true,
   steerSend: true, forkSession: true,
   newWorktreeSession: true, applyWorktree: true, removeWorktree: true,
-  rewindSession: true, workflowControl: true, btwSend: true,
+  rewindSession: true, workflowControl: true, btwSend: true, runDoctor: true,
 };
 
 export const HOST_MESSAGE_TYPES: readonly HostMsg["type"][] = Object.keys(HOST_MESSAGE_TYPE_MAP) as HostMsg["type"][];

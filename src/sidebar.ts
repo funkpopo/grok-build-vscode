@@ -55,6 +55,14 @@ import {
 import { buildPromptWithImages, type PromptImageInput } from "./prompt-builder";
 import { isDisabledMediaSlash, matchSlashCommand } from "./slash-filter";
 import { BTW_USAGE, isBtwSlash, parseBtwSlash } from "./btw";
+import {
+  DOCTOR_CLI_ARGS,
+  formatDoctorReport,
+  formatDoctorSummary,
+  isDoctorSlash,
+  parseDoctorJson,
+  type DoctorReport,
+} from "./doctor";
 import { MENTION_INDEX_LIMIT, MENTION_INDEX_TTL_MS, buildExcludeGlob, filterMentionFiles, normalizeRelPath, orderMentionIndex } from "./mention";
 import {
   configCombineQueuedPrompts,
@@ -972,6 +980,95 @@ See design doc for the full state machine diagram.`;
     }
     this.emit(session, { type: "queuedSends", items: [...session.queuedSends] });
     await this.handleSend(text, false, session);
+  }
+
+  /**
+   * `/doctor` diagnostics (P3-20) — run standalone `grok doctor --json` and
+   * surface the report in the Grok Output channel + a compact chat card.
+   *
+   * Not an ACP slash (TUI pager builtin; never advertised over stdio). No
+   * session required; does not cancel or busy the main turn. Session
+   * export/share is out of scope.
+   */
+  async runDoctor(): Promise<void> {
+    const session = this.focused;
+    const id = `doctor-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    // Prefer emit so a warm re-focus still shows the card; post alone if the
+    // webview is up with no focused session buffer (should not happen).
+    this.emit(session, { type: "doctorReport", id, pending: true });
+    const cliPath =
+      this.cliPath ||
+      locateGrokCli(vscode.workspace.getConfiguration("grok").get<string>("cliPath", ""));
+    if (!cliPath) {
+      this.emit(session, {
+        type: "doctorReport",
+        id,
+        pending: false,
+        error:
+          "Grok Build CLI not found. Install it (gear → Version & about) or set grok.cliPath.",
+      });
+      return;
+    }
+    try {
+      const { stdout, stderr } = await execFileAsync(cliPath, [...DOCTOR_CLI_ARGS], {
+        timeout: 45_000,
+        maxBuffer: 2 * 1024 * 1024,
+        // Prefer the IDE-terminal identity when the extension host inherits a
+        // bare shell env (so doctor reports "VS Code" / "Cursor" rather than
+        // "windows_terminal" for the host process).
+        env: {
+          ...process.env,
+          TERM_PROGRAM: process.env.TERM_PROGRAM || (vscode.env.appName.includes("Cursor") ? "cursor" : "vscode"),
+        },
+      });
+      const combined = String(stdout || "") + (stderr ? `\n${stderr}` : "");
+      let report: DoctorReport | null = parseDoctorJson(stdout);
+      if (!report) {
+        // Older builds / non-JSON path: still show whatever the CLI printed.
+        const plain = combined.trim();
+        if (!plain) {
+          this.emit(session, {
+            type: "doctorReport",
+            id,
+            pending: false,
+            error: "Doctor produced no output. Update Grok Build CLI (0.2.109+) via gear → Version & about.",
+          });
+          return;
+        }
+        report = { rawText: plain };
+      }
+      const reportText = formatDoctorReport(report);
+      const summary = formatDoctorSummary(report);
+      const issues = report.counts?.issues ?? 0;
+      const recommendations = report.counts?.recommendations ?? 0;
+
+      this.output.appendLine("── Grok Doctor ──");
+      for (const line of reportText.split(/\r?\n/)) this.output.appendLine(line);
+      this.output.appendLine("── end ──");
+      this.output.show(true);
+
+      this.emit(session, {
+        type: "doctorReport",
+        id,
+        pending: false,
+        summary,
+        reportText,
+        issues,
+        recommendations,
+      });
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      this.output.appendLine(`[doctor] failed: ${msg}`);
+      this.emit(session, {
+        type: "doctorReport",
+        id,
+        pending: false,
+        error:
+          /ENOENT|not found|spawn/i.test(msg)
+            ? "Grok Build CLI not found. Install or set grok.cliPath."
+            : `Doctor failed: ${msg}`,
+      });
+    }
   }
 
   /**
@@ -2887,8 +2984,11 @@ See design doc for the full state machine diagram.`;
         break;
       case "send":
         // `/btw` is an aside RPC — never a main-turn prompt (P3-16).
+        // `/doctor` is host-side CLI diagnostics — never a main-turn prompt (P3-20).
         if (isBtwSlash(msg.text ?? "")) {
           await this.btwSend(msg.text);
+        } else if (isDoctorSlash(msg.text ?? "")) {
+          await this.runDoctor();
         } else {
           await this.handleSend(msg.text, msg.bare === true);
         }
@@ -2907,10 +3007,15 @@ See design doc for the full state machine diagram.`;
         // composing more APPENDS into one entry (blank-line separator). When off,
         // each compose is its own entry and flush drains one turn at a time.
         // A `/btw` mid-turn must not queue — it is a side question (P3-16).
+        // A `/doctor` mid-turn must not queue either — host-side diagnostics (P3-20).
         const s = this.focused;
         if (typeof msg.text === "string" && msg.text.trim()) {
           if (isBtwSlash(msg.text)) {
             await this.btwSend(msg.text);
+            break;
+          }
+          if (isDoctorSlash(msg.text)) {
+            await this.runDoctor();
             break;
           }
           if (s.combineQueuedPrompts && s.queuedSends.length) {
@@ -2934,6 +3039,9 @@ See design doc for the full state machine diagram.`;
       }
       case "btwSend":
         await this.btwSend(msg.text);
+        break;
+      case "runDoctor":
+        await this.runDoctor();
         break;
       case "steerSend":
         await this.steerSend(msg.text);
@@ -3131,9 +3239,20 @@ See design doc for the full state machine diagram.`;
         if (!mcpCli) term.sendText("grok mcp list");
         break;
       }
-      case "showLogs":
-        this.output.show();
+      case "showLogs": {
+        // Reveal + focus the Grok Output channel. A bare show() is easy to miss
+        // when Grok lives in the secondary side bar (Panel opens below with no
+        // in-chat change). Explicit preserveFocus:false takes keyboard focus so
+        // the Panel is obviously selected; also nudge the Panel workbench area
+        // for hosts where OutputChannel.show alone doesn't surface it.
+        this.output.show(false);
+        try {
+          await vscode.commands.executeCommand("workbench.action.focusPanel");
+        } catch {
+          /* older / forked hosts may lack the command */
+        }
         break;
+      }
       case "moveView": {
         // Gear -> Config & debug -> Move view. Each destination targets an
         // extension-owned container, so the move is direct — no quickpick. An

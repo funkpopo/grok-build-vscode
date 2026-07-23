@@ -38,6 +38,7 @@ export function activate(context: vscode.ExtensionContext): void {
       sidebar.insertActiveMention(),
     ),
     vscode.commands.registerCommand("grok.showLogs", () => output.show()),
+    vscode.commands.registerCommand("grok.doctor", () => sidebar.runDoctor()),
     vscode.commands.registerCommand("grok.logout", () => sidebar.logout()),
     vscode.commands.registerCommand("grok.linkRemote", () => sidebar.linkRemoteDevice()),
     vscode.commands.registerCommand("grok.unlinkRemote", () => sidebar.unlinkRemoteDevice()),

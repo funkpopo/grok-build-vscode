@@ -6,14 +6,21 @@ export interface SlashCmd {
 /**
  * Slash commands the extension owns (not advertised by the CLI over ACP).
  * Injected at the same ingestion point as `filterAdvertisedCommands` so they
- * appear in autocomplete and the dispatch name list. `/btw` (P3-16) is an
- * unadvertised `_x.ai/btw` RPC — without this entry, typing `/btw` shows no
- * popover hint even though send works.
+ * appear in autocomplete and the dispatch name list.
+ *
+ * - `/btw` (P3-16) — unadvertised `_x.ai/btw` RPC
+ * - `/doctor` (P3-20) — TUI pager builtin; extension runs standalone
+ *   `grok doctor --json` instead (aliases match via `isDoctorSlash`, only
+ *   the primary name is injected so the `/` popover stays short)
  */
 export const EXTENSION_SLASH_COMMANDS: readonly SlashCmd[] = [
   {
     name: "btw",
     description: "Side question — does not interrupt the main turn",
+  },
+  {
+    name: "doctor",
+    description: "Terminal & environment diagnostics (also gear → Config & debug)",
   },
 ];
 
