@@ -3739,6 +3739,21 @@
     scrollToBottom();
   }
 
+  /** Plan-gate block: always name the three review actions; if a plan card is
+   *  already open, point at it and give it a brief attention flash. */
+  function addPlanBlockedNotice(kind, target) {
+    const openCard = messagesEl.querySelector(".card.plan:not(.resolved)");
+    const text = (typeof GrokWebviewHelpers !== "undefined" && GrokWebviewHelpers.planBlockedNoticeText)
+      ? GrokWebviewHelpers.planBlockedNoticeText(kind, target, !!openCard)
+      : `Plan mode blocked an action. Use Approve & implement, Keep planning, or Cancel when a plan card appears — or switch to Agent.`;
+    addPlanNotice(text);
+    if (openCard) {
+      openCard.classList.add("plan-card-attention");
+      try { openCard.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch { /* happy-dom */ }
+      setTimeout(() => openCard.classList.remove("plan-card-attention"), 1600);
+    }
+  }
+
   // Automatic (context-full) compaction note. The CLI can compact at a turn's
   // START (no active bubble — clean) OR between tool-loop passes (an agent bubble
   // may be live). Finalize that bubble first so the notice sits BETWEEN prior
@@ -4581,7 +4596,7 @@
 
   const VERDICT_LABEL = {
     approved: "Approved",
-    rejected: "Rejected",
+    rejected: "Rejected", // resolved stamp; the live button is "Keep planning"
     abandoned: "Cancelled",
   };
 
@@ -4664,7 +4679,7 @@
 
     const sub = document.createElement("div");
     sub.className = "card-subtitle";
-    sub.textContent = "Nothing has been written yet. Approve, reject with feedback, or cancel to leave plan mode.";
+    sub.textContent = "Nothing has been written yet. Approve & implement, Keep planning (with optional feedback), or Cancel to leave plan mode.";
     el.appendChild(sub);
 
     const planText = req.plan || "";
@@ -4705,7 +4720,7 @@
       return b;
     };
     actions.appendChild(mk("Approve & implement", "primary", "approved", true));
-    actions.appendChild(mk("Reject", "", "rejected", true));
+    actions.appendChild(mk("Keep planning", "", "rejected", true));
     actions.appendChild(mk("Cancel", "secondary", "abandoned", true));
     el.appendChild(actions);
     messagesEl.appendChild(el);
@@ -5803,11 +5818,7 @@
         addAutoCompactNotice(msg.text);
         break;
       case "planBlocked":
-        addPlanNotice(
-          msg.kind === "terminal"
-            ? `Plan mode blocked a command: ${msg.target}`
-            : `Plan mode blocked a write to ${msg.target}`,
-        );
+        addPlanBlockedNotice(msg.kind, msg.target);
         break;
       case "promptComplete":
         // Finalize the Thinking block and update the token donut — but DO NOT

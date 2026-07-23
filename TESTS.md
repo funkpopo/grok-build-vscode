@@ -142,11 +142,11 @@ Shared between the shipped webview and the tests (`media/webview-helpers.js`).
 
 happy-dom test (see [Webview DOM tests](#webview-dom-tests) below). Drives the shipped `media/chat.js`, dispatches the messages `sidebar.ts` posts, clicks the rendered buttons, asserts on the `postMessage` payload that goes back to the host.
 
-- Renders the card with plan body, feedback textarea, and three buttons: **Approve & implement** / **Reject** / **Cancel**
-- All three verdicts carry the trimmed `comment` when the textarea has text, and **omit** the `comment` key when it's empty: "Reject" → `verdict:"rejected"`, "Approve & implement" → `verdict:"approved"`, "Cancel" → `verdict:"abandoned"`
+- Renders the card with plan body, feedback textarea, and three buttons: **Approve & implement** / **Keep planning** / **Cancel**
+- All three verdicts carry the trimmed `comment` when the textarea has text, and **omit** the `comment` key when it's empty: "Keep planning" → `verdict:"rejected"`, "Approve & implement" → `verdict:"approved"`, "Cancel" → `verdict:"abandoned"`
 - A click resolves the card, highlights the chosen button (`.chosen`), shows the verdict label, and disables both buttons + the textarea (no double-submit)
 - The plan body's plan-link opens the plan snapshot **without** resolving the approval card (live and restored-plan variants)
-- `planNotice` / `planBlocked` (command + write variants) render a `.plan-notice` with the right text
+- `planNotice` / `planBlocked` (command / write / permission) render a `.plan-notice` that names the three review actions (points at an open plan card when present)
 - Read-only plan-history card renders with the persisted verdict label
 
 ### `test/acp.test.ts` — ACP client helpers (3 tests)

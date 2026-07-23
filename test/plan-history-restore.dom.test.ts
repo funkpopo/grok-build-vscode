@@ -390,7 +390,7 @@ describe("plan card verdict labels (live exit_plan_mode flow)", () => {
   it("each verdict click produces the matching status label on the resolved card", () => {
     const cases: Array<{ button: string; verdict: string; label: string }> = [
       { button: "Approve & implement", verdict: "approved",  label: "Approved" },
-      { button: "Reject",              verdict: "rejected",  label: "Rejected" },
+      { button: "Keep planning",       verdict: "rejected",  label: "Rejected" },
       { button: "Cancel",              verdict: "abandoned", label: "Cancelled" },
     ];
     for (const c of cases) {

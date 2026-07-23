@@ -480,10 +480,10 @@ export class GrokSidebar implements vscode.WebviewViewProvider {
 
   /**
    * Development / testing helper. Posts a realistic dummy `exitPlanRequest` so
-   * the plan-review card (Approve / Reject / Cancel) appears in the webview.
-   * Lets you exercise the three options, the feedback textarea, the resolved
-   * state, and the downstream notice/mode logic without a live grok process.
-   * The "Reject" button is the one labeled "Keep planning" in the real flow.
+   * the plan-review card (Approve & implement / Keep planning / Cancel) appears
+   * in the webview. Lets you exercise the three options, the feedback textarea,
+   * the resolved state, and the downstream notice/mode logic without a live
+   * grok process.
    */
   debugShowDummyPlan(): void {
     const dummyPlan = `# Refactor authentication helper
@@ -2553,9 +2553,13 @@ See design doc for the full state machine diagram.`;
         const rejectId = pickRejectOption(req.options);
         if (rejectId) {
           client.respondPermission(req.id, rejectId);
+          // Same channel as fs/terminal blocks so the webview can attach the
+          // actionable "Approve / Keep planning / Cancel" how-to (and highlight
+          // an open plan card when one exists).
           this.emit(session, {
-            type: "planNotice",
-            text: `Plan mode declined a ${req.toolCall?.kind ?? "tool"} request — approve the plan first.`,
+            type: "planBlocked",
+            kind: "permission",
+            target: req.toolCall?.kind ?? "tool",
           });
           return;
         }

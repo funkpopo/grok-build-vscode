@@ -662,7 +662,37 @@
     return { lines, added, removed, truncated: false };
   }
 
-  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags };
+  /**
+   * User-facing copy when plan mode blocks a mutation / declines a permission.
+   * Always names the three plan-card actions so the notice is actionable even
+   * when no review card is on screen yet (agent tried to execute mid-plan).
+   *
+   * @param {string} kind  "terminal" | "write" | "permission" | other
+   * @param {string} [target]  command, path, or tool kind
+   * @param {boolean} [hasOpenPlanCard]  unresolved `.card.plan` already visible
+   */
+  function planBlockedNoticeText(kind, target, hasOpenPlanCard) {
+    const short = String(target || "").trim().replace(/\s+/g, " ");
+    const clipped = short.length > 80 ? short.slice(0, 77) + "…" : short;
+    let what;
+    if (kind === "terminal") {
+      what = clipped ? `blocked a command: ${clipped}` : "blocked a command";
+    } else if (kind === "write") {
+      what = clipped ? `blocked a write to ${clipped}` : "blocked a write";
+    } else if (kind === "permission") {
+      what = clipped
+        ? `declined a ${clipped} request`
+        : "declined a mutating request";
+    } else {
+      what = clipped ? `blocked ${clipped}` : "blocked a mutating action";
+    }
+    const how = hasOpenPlanCard
+      ? "Use Approve & implement, Keep planning, or Cancel on the plan card above."
+      : "Wait for a plan review card (Approve & implement / Keep planning / Cancel), or switch to Agent in the toolbar to allow changes.";
+    return `Plan mode ${what}. ${how}`;
+  }
+
+  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, planBlockedNoticeText };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

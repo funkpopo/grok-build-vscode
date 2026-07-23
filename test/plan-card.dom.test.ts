@@ -8,7 +8,7 @@
 //     the feedback textarea is non-empty (the `...(comment ? {comment} : {})` spread)
 //   - "Approve & implement" sends verdict:"approved" and never a comment
 //   - after a click the card resolves and both buttons + textarea disable
-//   - planNotice / planBlocked render a .plan-notice with the right text
+//   - planNotice / planBlocked render a .plan-notice that names the three actions
 //
 // What it deliberately does NOT cover: real VS Code rendering, CSS, the actual
 // acquireVsCodeApi bridge, and the round-trip to client.setMode/client.prompt.
@@ -35,7 +35,7 @@ describe("plan card (real chat.js in a DOM)", () => {
     expect(card!.querySelector(".plan-file-link code")!.textContent).toBe("plan2.md");
     expect(card!.querySelector("textarea.plan-feedback")).not.toBeNull();
     const labels = [...card!.querySelectorAll(".card-actions button")].map((b) => b.textContent);
-    expect(labels).toEqual(["Approve & implement", "Reject", "Cancel"]);
+    expect(labels).toEqual(["Approve & implement", "Keep planning", "Cancel"]);
   });
 
   it("opens the live plan link without resolving the approval card", () => {
@@ -117,12 +117,12 @@ describe("plan card (real chat.js in a DOM)", () => {
     expect(card.querySelectorAll(".plan-verdict-label")).toHaveLength(1); // no double label
   });
 
-  it("'Reject' with empty feedback sends verdict:rejected and NO comment key", () => {
+  it("'Keep planning' with empty feedback sends verdict:rejected and NO comment key", () => {
     const { window, posted, doc } = bootWebview();
     dispatch(window, { type: "exitPlanRequest", req: { id: 11, plan: "p" } });
 
     const reject = [...doc.querySelectorAll(".card.plan .card-actions button")]
-      .find((b) => b.textContent === "Reject") as HTMLButtonElement;
+      .find((b) => b.textContent === "Keep planning") as HTMLButtonElement;
     click(window, reject);
 
     expect(posted).toHaveLength(1);
@@ -130,14 +130,14 @@ describe("plan card (real chat.js in a DOM)", () => {
     expect("comment" in posted[0]).toBe(false);
   });
 
-  it("'Reject' with feedback text includes the trimmed comment", () => {
+  it("'Keep planning' with feedback text includes the trimmed comment", () => {
     const { window, posted, doc } = bootWebview();
     dispatch(window, { type: "exitPlanRequest", req: { id: 12, plan: "p" } });
 
     const card = doc.querySelector(".card.plan")!;
     (card.querySelector("textarea.plan-feedback") as HTMLTextAreaElement).value = "  use a __tests__ folder  ";
     const reject = [...card.querySelectorAll(".card-actions button")]
-      .find((b) => b.textContent === "Reject") as HTMLButtonElement;
+      .find((b) => b.textContent === "Keep planning") as HTMLButtonElement;
     click(window, reject);
 
     expect(posted[0]).toEqual({
@@ -214,7 +214,7 @@ describe("plan card (real chat.js in a DOM)", () => {
 
     const card = doc.querySelector(".card.plan")!;
     const buttons = [...card.querySelectorAll(".card-actions button")] as HTMLButtonElement[];
-    const rejectBtn = buttons.find((b) => b.textContent === "Reject")!;
+    const rejectBtn = buttons.find((b) => b.textContent === "Keep planning")!;
     click(window, rejectBtn);
 
     expect(card.classList.contains("resolved")).toBe(true);
@@ -265,16 +265,37 @@ describe("plan card (real chat.js in a DOM)", () => {
     expect(posted).toEqual([{ type: "openFile", path: "/tmp/grok/restored-plan.md" }]);
   });
 
-  it("renders a plan-notice for planNotice and the blocked-command/-write variants", () => {
+  it("renders a plan-notice for planNotice and actionable planBlocked how-tos", () => {
     const { window, doc } = bootWebview();
     dispatch(window, { type: "planNotice", text: "Staying in Plan mode — nothing was written." });
     dispatch(window, { type: "planBlocked", kind: "terminal", target: "npm install" });
     dispatch(window, { type: "planBlocked", kind: "write", target: "src/app.ts" });
+    dispatch(window, { type: "planBlocked", kind: "permission", target: "execute" });
 
     const notices = [...doc.querySelectorAll(".plan-notice")].map((n) => n.textContent);
-    expect(notices).toHaveLength(3);
+    expect(notices).toHaveLength(4);
     expect(notices[0]).toContain("Staying in Plan mode");
-    expect(notices[1]).toContain("Plan mode blocked a command: npm install");
-    expect(notices[2]).toContain("Plan mode blocked a write to src/app.ts");
+    expect(notices[1]).toContain("blocked a command: npm install");
+    expect(notices[1]).toMatch(/Approve & implement/);
+    expect(notices[1]).toMatch(/Keep planning/);
+    expect(notices[1]).toMatch(/Cancel/);
+    expect(notices[1]).toMatch(/switch to Agent/i);
+    expect(notices[2]).toContain("blocked a write to src/app.ts");
+    expect(notices[2]).toMatch(/Approve & implement/);
+    expect(notices[3]).toContain("declined a execute request");
+    expect(notices[3]).toMatch(/Keep planning/);
+  });
+
+  it("planBlocked with an open plan card points at the card actions (not Agent)", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "exitPlanRequest", req: { id: 99, plan: "do the thing" } });
+    dispatch(window, { type: "planBlocked", kind: "permission", target: "execute" });
+
+    const notice = [...doc.querySelectorAll(".plan-notice")].pop()!;
+    expect(notice.textContent).toContain("declined a execute request");
+    expect(notice.textContent).toMatch(/plan card above/i);
+    expect(notice.textContent).toMatch(/Approve & implement/);
+    expect(notice.textContent).not.toMatch(/switch to Agent/i);
+    expect(doc.querySelector(".card.plan")!.classList.contains("plan-card-attention")).toBe(true);
   });
 });

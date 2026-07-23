@@ -2408,16 +2408,24 @@ body.dragging { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -
 
 .plan-notice {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   font-size: 11px;
+  line-height: 1.4;
   color: var(--vscode-descriptionForeground);
   padding: 5px 10px;
   margin: 4px 0;
   border-left: 2px solid var(--vscode-charts-blue, #569cd6);
   background: var(--vscode-textBlockQuote-background, rgba(86, 156, 214, 0.08));
 }
-.plan-notice svg { flex-shrink: 0; opacity: 0.8; }
+.plan-notice svg { flex-shrink: 0; opacity: 0.8; margin-top: 1px; }
+
+/* Brief flash when a plan-gate notice points at an open review card. */
+.card.plan.plan-card-attention {
+  outline: 1px solid var(--vscode-focusBorder, #007fd4);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--vscode-focusBorder, #007fd4) 35%, transparent);
+  transition: outline-color 0.2s ease, box-shadow 0.2s ease;
+}
 
 .plan-tools {
   display: flex;
