@@ -576,18 +576,117 @@ describe("reasoning trace (regression: thinking traces no longer expandable)", (
   });
 });
 
-describe("Grokking… indicator (waiting placeholder)", () => {
+// Grok Build interleaves reasoning with tools and narration:
+//   Thinking → tools → Thought for Ns → Thinking → answer
+// Each interrupted segment freezes as "Thought" / "Thought for Ns"; the next
+// thought stream opens a NEW block below, instead of stacking into the first
+// block at the top of the turn.
+describe("thinking interleaves with tools and narration", () => {
+  function seq(doc: Document): string[] {
+    const messages = doc.getElementById("messages")!;
+    return (Array.from(messages.children) as HTMLElement[])
+      .filter((c) => c.id !== "welcome")
+      .map((c) => {
+        if (c.classList.contains("thinking")) {
+          const label = c.querySelector(".thinking-label")?.textContent ?? "";
+          const body = c.querySelector(".thinking-body")?.textContent ?? "";
+          return `thinking:${label}:${body}`;
+        }
+        if (c.classList.contains("agent")) {
+          return "agent:" + (c.querySelector(".body")?.textContent ?? "");
+        }
+        if (c.classList.contains("tool-group") || c.classList.contains("tool-flat")) {
+          return "tools";
+        }
+        return c.className;
+      });
+  }
+
+  it("splits thought segments around tools instead of stacking one block at the top", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "showThinking", value: true });
+    dispatch(window, { type: "thoughtChunk", text: "let me look at the file" });
+    dispatch(window, {
+      type: "toolCall",
+      call: { toolCallId: "t1", kind: "read", title: "Read `/a.ts`", rawInput: { path: "/a.ts" } },
+    });
+    dispatch(window, { type: "toolCallUpdate", call: { toolCallId: "t1", status: "completed" } });
+    dispatch(window, { type: "thoughtChunk", text: "now I'll edit it" });
+    dispatch(window, { type: "messageChunk", text: "Done." });
+    dispatch(window, { type: "promptComplete" });
+
+    const s = seq(doc);
+    expect(s[0]).toMatch(/^thinking:Thought for \d+s:let me look at the file$/);
+    expect(s[1]).toBe("tools");
+    expect(s[2]).toMatch(/^thinking:Thought for \d+s:now I'll edit it$/);
+    expect(s[3]).toBe("agent:Done.");
+    // Two distinct thinking blocks — not one coalesced buffer at the top.
+    expect(s.filter((x) => x.startsWith("thinking:"))).toHaveLength(2);
+  });
+
+  it("splits thought segments around agent narration", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "showThinking", value: true });
+    dispatch(window, { type: "thoughtChunk", text: "first reason" });
+    dispatch(window, { type: "messageChunk", text: "mid narration" });
+    dispatch(window, { type: "thoughtChunk", text: "second reason" });
+    dispatch(window, { type: "messageChunk", text: " final" });
+    dispatch(window, { type: "promptComplete" });
+
+    const s = seq(doc);
+    expect(s[0]).toMatch(/^thinking:Thought for \d+s:first reason$/);
+    expect(s[1]).toBe("agent:mid narration");
+    expect(s[2]).toMatch(/^thinking:Thought for \d+s:second reason$/);
+    expect(s[3]).toBe("agent: final");
+    expect(s.filter((x) => x.startsWith("thinking:"))).toHaveLength(2);
+    expect(s.filter((x) => x.startsWith("agent:"))).toHaveLength(2);
+  });
+
+  it("coalesces continuous thought chunks into one Thinking block", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "showThinking", value: true });
+    dispatch(window, { type: "thoughtChunk", text: "part A" });
+    dispatch(window, { type: "thoughtChunk", text: " part B" });
+    dispatch(window, { type: "promptComplete" });
+
+    const blocks = doc.querySelectorAll(".msg.thinking");
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].querySelector(".thinking-body")?.textContent).toBe("part A part B");
+    expect(blocks[0].querySelector(".thinking-label")?.textContent).toMatch(/^Thought for \d+s$/);
+  });
+
+  it("replay labels settled segments as Thought (no elapsed seconds)", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "showThinking", value: true });
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, { type: "thoughtChunk", text: "reason then tool" });
+    dispatch(window, {
+      type: "toolCall",
+      call: { toolCallId: "t1", kind: "read", rawInput: { path: "/a.ts" } },
+    });
+    dispatch(window, { type: "thoughtChunk", text: "after tool" });
+    dispatch(window, { type: "historyReplay", active: false });
+
+    const labels = [...doc.querySelectorAll(".msg.thinking .thinking-label")].map(
+      (el) => el.textContent,
+    );
+    expect(labels).toEqual(["Thought", "Thought"]);
+  });
+});
+
+describe("Waiting for response indicator (waiting placeholder)", () => {
   const grokking = (doc: Document) => doc.querySelector(".grokking") as HTMLElement | null;
 
-  it("mounts on agentStart with a spinning orbit icon, a label, and no dots or chevron", () => {
+  it("mounts on agentStart with a spinning orbit icon, Grok Build status label, and no dots or chevron", () => {
     const { window, doc } = bootWebview();
     dispatch(window, { type: "agentStart" });
 
     const el = grokking(doc);
     expect(el).not.toBeNull();
     const label = el!.querySelector(".grokking-label") as HTMLElement;
-    expect(label.textContent).toBe("Grokking");
-    // The orbit icon is Grokking's motion — no blink-dots here (those are for
+    expect(label.textContent).toBe("Waiting for response");
+    expect(el!.title).toBe("Waiting for response");
+    // The orbit icon is the waiting motion — no blink-dots here (those are for
     // Thinking / tools); and NOT expandable: no chevron, no body, not .thinking.
     expect(el!.querySelector(".grokking-icon svg")).not.toBeNull();
     expect(el!.querySelector(".blink-dots")).toBeNull();
@@ -1162,13 +1261,15 @@ describe("continuous progress indicator (always show something mid-turn)", () =>
     simulate(true);
   });
 
-  it("stands in with Grokking when a step would otherwise leave nothing visible", () => {
+  it("stands in with Waiting for response when a step would otherwise leave nothing visible", () => {
     const { window, doc } = bootWebview();
     dispatch(window, { type: "setBusy", value: true }); // unlocked turn, nothing shown yet
     expect(doc.querySelector(".grokking")).toBeNull();
     // A bare completed-tool update with no prior group leaves nothing on its own…
     dispatch(window, { type: "toolCallUpdate", call: { toolCallId: "x", status: "completed" } });
-    expect(doc.querySelector(".grokking")).not.toBeNull(); // …so the safety net stands in
+    const wait = doc.querySelector(".grokking");
+    expect(wait).not.toBeNull(); // …so the safety net stands in
+    expect(wait!.querySelector(".grokking-label")?.textContent).toBe("Waiting for response");
   });
 
   it("does not stand in during the locked priming window", () => {

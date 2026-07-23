@@ -172,14 +172,15 @@
     // the verdict click and the first incoming agent chunk; cleared by any
     // arriving content or by reset.
     planProcessingEl: null,
-    // The "Grokking…" placeholder shown while a user-initiated turn is waiting on
-    // grok — from the moment the user sends (agentStart) until the first real
-    // content arrives (a thought, message, tool card, …), which replaces it in
-    // place. Same font + animated dots as the Thinking header, minus the expand
-    // chevron. Covers the held-behind-primer gap too: the message shows as sent,
-    // this spins, then the real Thinking block takes over. Never shown for the
-    // silent primer turn (which emits no agentStart). One at a time with
-    // planProcessing (each hides the other).
+    // The "Waiting for response" placeholder (Grok Build TUI phrasing) shown
+    // while a user-initiated turn is waiting on grok — from agentStart until the
+    // first real content arrives (a thought, message, tool card, …), which
+    // replaces it in place. Same font + shimmer as the Thinking stand-in, minus
+    // the expand chevron. Covers the held-behind-primer gap too: the message
+    // shows as sent, this spins, then the real Thinking block takes over. Never
+    // shown for the silent primer turn (which emits no agentStart). One at a
+    // time with planProcessing (each hides the other). Class stays `.grokking`
+    // for CSS stability; the visible label is the status text.
     grokkingEl: null,
     // When true, the busy state is "locked" (e.g. session-start priming): the
     // send button shows a spinner and is disabled. When false, busy is
@@ -2457,6 +2458,11 @@
     clearWelcome();
     hideGrokking(); // a tool card is the first content of this turn
     hideThinkingIndicator(); // a running tool now conveys the activity
+    // Settle any open thinking segment so later thoughts open a NEW block below
+    // this tool batch (Grok Build interleaves Thinking / tools / Thought). Without
+    // this, every thought chunk of the turn keeps appending to the first block
+    // at the top while tools and narration stack underneath.
+    finalizeThought();
     if (!state.activeToolGroupEl) {
       // Starting a fresh batch of tools after some agent narration: detach the
       // active agent bubble so the NEXT narration opens a new bubble *below* this
@@ -3487,6 +3493,9 @@
 
   function addSubagentCard(call) {
     closeToolGroup();
+    // Subagents interrupt reasoning the same way tools do — stamp "Thought for
+    // Ns" on the open segment so a later thought stream opens below the card.
+    finalizeThought();
     clearWelcome();
     hideGrokking();
     const el = document.createElement("div");
@@ -3782,8 +3791,20 @@
     state.activeUserEl = null;
     state.skipUserBubble = false; // marker-only verdict turn is over
     clearWelcome();
+    // Interleave with narration / tools (Grok Build scrollback order):
+    //   Thinking → tools → Thought for Ns → Thinking → answer …
+    // If a tool batch or agent bubble is open, settle it first so this segment
+    // mounts BELOW it. Continuous thought chunks (no interruption) still
+    // coalesce into one block.
+    if (state.activeAgentEl || state.activeToolGroupEl) {
+      flushAgent();
+      state.activeAgentEl = null;
+      state.activeAgentRaw = "";
+      closeToolGroup();
+      finalizeThought(); // belt-and-braces — usually already settled at interrupt
+    }
     if (!state.activeThoughtEl) {
-      if (!state.thoughtStartTime) state.thoughtStartTime = Date.now();
+      state.thoughtStartTime = Date.now();
       state.thoughtBuffer = "";
       const el = document.createElement("div");
       el.className = "msg thinking";
@@ -3819,6 +3840,32 @@
     scrollToBottom();
   }
 
+  // Stamp "Thought" / "Thought for Ns" on the open thinking segment and clear
+  // the active handles so the next thought chunk opens a fresh block. Called
+  // when tools / narration interrupt reasoning mid-turn, and from commitAgentTurn
+  // at turn end. No-op when nothing is open.
+  function finalizeThought() {
+    flushThought();
+    if (state.activeThoughtHdrEl) {
+      // Drop the blink-dots once the reasoning settles, and label it. Replayed
+      // turns have no real elapsed time, so they omit the seconds.
+      const dots = state.activeThoughtHdrEl.querySelector(".blink-dots");
+      if (dots) dots.remove();
+      const label = state.activeThoughtHdrEl.querySelector(".thinking-label");
+      if (label) {
+        label.textContent = state.replaying
+          ? "Thought"
+          : state.thoughtStartTime
+            ? `Thought for ${Math.round((Date.now() - state.thoughtStartTime) / 1000)}s`
+            : "Thought";
+      }
+    }
+    state.thoughtStartTime = null;
+    state.thoughtBuffer = "";
+    state.activeThoughtEl = null;
+    state.activeThoughtHdrEl = null;
+  }
+
   function appendAgent(text) {
     if (state.suppressReplayTurn) return; // grok's response to the primer
     hidePlanProcessing(); // agent output started — clear the indicator
@@ -3826,6 +3873,9 @@
     hideThinkingIndicator(); // a real message replaces the "Thinking…" stand-in
     state.activeUserEl = null;
     state.skipUserBubble = false; // marker-only verdict turn is over
+    // Settle the open thinking segment so "Thought for Ns" freezes above this
+    // bubble (and a later thought stream opens a new block below).
+    finalizeThought();
     closeToolGroup();
     clearWelcome();
     if (!state.activeAgentEl) {
@@ -3856,26 +3906,11 @@
   // user-message boundary while replaying a loaded session.
   function commitAgentTurn() {
     flushAgent();
-    flushThought();
-    if (state.thoughtStartTime && state.activeThoughtHdrEl) {
-      // Drop the blink-dots once the reasoning settles, and label it. Replayed
-      // turns have no real elapsed time, so they omit the seconds.
-      const dots = state.activeThoughtHdrEl.querySelector(".blink-dots");
-      if (dots) dots.remove();
-      const label = state.activeThoughtHdrEl.querySelector(".thinking-label");
-      if (label) {
-        label.textContent = state.replaying
-          ? "Thought"
-          : `Thought for ${Math.round((Date.now() - state.thoughtStartTime) / 1000)}s`;
-      }
-      state.thoughtStartTime = null;
-    }
+    finalizeThought();
     closeToolGroup();
     hideThinkingIndicator();
     state.activeAgentEl = null;
     state.activeAgentRaw = "";
-    state.activeThoughtEl = null;
-    state.activeThoughtHdrEl = null;
   }
 
   // Replayed user prompts (session/load) arrive as user_message_chunk updates.
@@ -4059,11 +4094,21 @@
     state.planProcessingEl = null;
   }
 
-  // "Grokking…" — the generic waiting indicator shown on every user-initiated
-  // turn from agentStart until grok produces its first content (thought /
-  // message / tool / card), which removes it and renders in its place. Mirrors
-  // the Thinking header's look (loading-dots ellipsis, same muted font) without
-  // the chevron, and is not expandable. Mutually exclusive with planProcessing.
+  // Grok Build TUI phase labels for the mid-turn waiting row. Prefer a specific
+  // wait reason when we can see one in the chat; otherwise the generic default.
+  function waitingStatusLabel() {
+    if (messagesEl.querySelector(".subagent-card:not(.subagent-done)")) {
+      return "Waiting on subagent";
+    }
+    return "Waiting for response";
+  }
+
+  // "Waiting for response" — the generic waiting indicator shown on every
+  // user-initiated turn from agentStart until grok produces its first content
+  // (thought / message / tool / card), which removes it and renders in its
+  // place. Label matches the Grok Build TUI status line. Mirrors the Thinking
+  // header's look (shimmer label, same muted font) without the chevron, and is
+  // not expandable. Mutually exclusive with planProcessing.
   function showGrokking() {
     hideGrokking(); // dedupe
     hidePlanProcessing(); // one waiting indicator at a time
@@ -4071,11 +4116,12 @@
     clearWelcome();
     const el = document.createElement("div");
     el.className = "grokking";
-    // No blink-dots here — the spinning orbit icon is Grokking's "waiting" motion
+    const label = waitingStatusLabel();
+    // No blink-dots here — the spinning orbit icon is the "waiting" motion
     // (Thinking / tools use the dots for discrete progress instead).
-    el.innerHTML = `<span class="grokking-icon">${ICON.orbit}</span><span class="grokking-label">Grokking</span>`;
-    el.setAttribute("aria-label", "Grok is working");
-    el.title = "Waiting for response";
+    el.innerHTML = `<span class="grokking-icon">${ICON.orbit}</span><span class="grokking-label">${escapeHtml(label)}</span>`;
+    el.setAttribute("aria-label", label);
+    el.title = label;
     messagesEl.appendChild(el);
     state.grokkingEl = el;
     scrollToBottom();
@@ -4128,7 +4174,8 @@
   // True when *something* already tells the user grok is mid-work or awaiting
   // them: a waiting indicator, a running tool group, streaming agent text, a
   // visible thinking block (only counts when traces are shown — hidden ones are
-  // display:none), or an open permission/question/plan card.
+  // display:none), an in-flight subagent card, or an open permission/question/
+  // plan card.
   function turnHasVisibleActivity() {
     return !!(
       state.grokkingEl ||
@@ -4137,15 +4184,16 @@
       state.activeToolGroupEl ||
       (state.activeAgentEl && (state.activeAgentRaw || "").trim()) ||
       (state.showThinking && state.activeThoughtEl) ||
+      messagesEl.querySelector(".subagent-card:not(.subagent-done)") ||
       messagesEl.querySelector(".card:not(.resolved)")
     );
   }
 
   // Guarantee a live turn never looks idle: while the user's turn is in flight
   // (busy, not the locked priming window, not replaying), at least one progress
-  // affordance — Grokking / Tools / Thinking — must be on screen. If a step left
-  // nothing visible, stand in with the generic "Grokking…"; the next real chunk
-  // replaces it. Called after each mid-turn event the agent emits.
+  // affordance — Waiting for response / Tools / Thinking — must be on screen.
+  // If a step left nothing visible, stand in with the generic status row; the
+  // next real chunk replaces it. Called after each mid-turn event the agent emits.
   function ensureActivityIndicator() {
     if (!state.busy || state.busyLocked || state.replaying) return;
     if (turnHasVisibleActivity()) return;
@@ -5547,8 +5595,9 @@
         break;
       case "agentStart":
         // A user-initiated turn just began (live send, or a plan-verdict
-        // follow-up). Show "Grokking…" until the first real content replaces it.
-        // The silent primer never emits agentStart, so it never shows here.
+        // follow-up). Show "Waiting for response" until the first real content
+        // replaces it. The silent primer never emits agentStart, so it never
+        // shows here.
         state.turnAgentActionsEl = null; // new turn → previous turn keeps its footer
         showGrokking();
         // Busy is event-sourced through the session buffer so a re-focus lands

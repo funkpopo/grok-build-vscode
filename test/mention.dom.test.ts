@@ -144,14 +144,16 @@ describe("@ file mention popover", () => {
 });
 
 describe("waiting-for-response indicator", () => {
-  it("agentStart shows the Grokking indicator with the shimmer label + title", () => {
+  it("agentStart shows the Waiting for response indicator with the shimmer label + title", () => {
     const h = bootWebview();
     dispatch(h.window, { type: "agentStart" });
 
     const grokking = h.doc.querySelector(".grokking") as HTMLElement;
     expect(grokking).toBeTruthy();
+    // Visible label matches Grok Build's TUI status (not the old "Grokking" brand).
     expect(grokking.title).toBe("Waiting for response");
+    expect(grokking.getAttribute("aria-label")).toBe("Waiting for response");
     // The shimmer CSS animates .grokking-label — the span must exist.
-    expect(grokking.querySelector(".grokking-label")?.textContent).toBe("Grokking");
+    expect(grokking.querySelector(".grokking-label")?.textContent).toBe("Waiting for response");
   });
 });
