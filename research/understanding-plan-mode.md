@@ -128,6 +128,7 @@ This is the most subtle part. The key private state:
 
 - `planActive: boolean` — the real enforcement flag. When true, the gate is up.
 - `autoApprove: boolean` — YOLO. Mutually exclusive with planActive.
+- `autoApproveBeforePlan: boolean` — YOLO stashed when Plan is raised (`captureAutoApproveBeforePlan`), restored on Approve / Abandon (`restoreAutoApproveAfterPlan`) so implement returns to Auto accept instead of Agent. Explicit Agent / Auto accept picks clear the stash.
 - `afterTurn?: () => Promise<void>` — deferred action that must run *after* the current planning prompt finishes (because you cannot start a new prompt while one is in flight).
 - `suppressPlanReject` — temporary content suppression so the CLI's false "approved" ramble doesn't appear in the UI after a Reject/Cancel.
 - `pendingPlanText` / `lastPlanText` — used to capture the plan for the card and for persistence.

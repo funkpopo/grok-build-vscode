@@ -22,3 +22,28 @@ export function modeToRemember(modeId: ModeId): "agent" | "yolo" | null {
 export function startsInYolo(defaultMode: string | undefined, isResume: boolean): boolean {
   return !isResume && defaultMode === "yolo";
 }
+
+/**
+ * Snapshot Auto accept for restore when Plan is raised. Re-entrant plan entry
+ * (user setMode("plan") then CLI `current_mode_update: plan`, or a second
+ * announcement while already planning) must keep the first stash — by then
+ * `autoApprove` is already false, so re-capturing would permanently lose YOLO.
+ */
+export function captureAutoApproveBeforePlan(
+  alreadyPlanActive: boolean,
+  autoApprove: boolean,
+  existingStash: boolean,
+): boolean {
+  return alreadyPlanActive ? existingStash : autoApprove;
+}
+
+/**
+ * After Approve / Abandon leave Plan, restore the pre-plan Auto accept flag.
+ * Reject keeps Plan up and leaves the stash untouched for a later leave.
+ */
+export function restoreAutoApproveAfterPlan(stashed: boolean): {
+  autoApprove: boolean;
+  autoApproveBeforePlan: boolean;
+} {
+  return { autoApprove: stashed, autoApproveBeforePlan: false };
+}

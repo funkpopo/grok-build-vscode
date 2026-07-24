@@ -24,6 +24,14 @@ export class Session {
   /** YOLO: auto-approve every permission request for this session. */
   autoApprove = false;
 
+  /**
+   * Auto accept flag captured when Plan was last raised, so Approve / Abandon
+   * can restore YOLO instead of always landing on Agent. Cleared on an explicit
+   * user mode pick (Agent / Auto accept) and when leaving Plan. Reject leaves
+   * the stash intact for a later leave.
+   */
+  autoApproveBeforePlan = false;
+
   /** Plan-mode gate is up for this session (client-side enforcement mirror). */
   planActive = false;
 

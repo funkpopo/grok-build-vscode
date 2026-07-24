@@ -12,7 +12,12 @@ import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voi
 import { VoiceStreamer } from "./voice-streamer";
 import type { PromptResultMeta } from "./acp-dispatch";
 import { MediaRef, addUsage, autoCompactFailedNotice, autoCompactStartedNote, autoRecoveryExhaustedNote, autoRecoveryStartedNote, contextUsedFromCompactNotification, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, parseSessionInfoAuth, parseSessionInfoContext, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, summarizeBackgroundCommand, usageIsRealMeasurement } from "./acp-dispatch";
-import { modeToRemember, startsInYolo } from "./mode-prefs";
+import {
+  captureAutoApproveBeforePlan,
+  modeToRemember,
+  restoreAutoApproveAfterPlan,
+  startsInYolo,
+} from "./mode-prefs";
 import { GROK_VIEW_ID, moveViewContainerFor } from "./view-move";
 import {
   APTABASE_APP_KEY_PROD,
@@ -656,6 +661,8 @@ See design doc for the full state machine diagram.`;
         .update("defaultMode", remember, vscode.ConfigurationTarget.Global);
     }
     if (modeId === "yolo") {
+      // Explicit pick supersedes any pre-plan stash.
+      session.autoApproveBeforePlan = false;
       session.autoApprove = true;
       this.setPlanActive(session, false); // posts displayMode → "yolo"
       if (session.client) {
@@ -663,8 +670,13 @@ See design doc for the full state machine diagram.`;
       }
       return;
     }
-    session.autoApprove = false;
     if (modeId === "plan") {
+      session.autoApproveBeforePlan = captureAutoApproveBeforePlan(
+        session.planActive,
+        session.autoApprove,
+        session.autoApproveBeforePlan,
+      );
+      session.autoApprove = false;
       this.setPlanActive(session, true); // posts displayMode → "plan"
       if (session.client) {
         try { await session.client.setMode("plan"); }
@@ -672,12 +684,21 @@ See design doc for the full state machine diagram.`;
       }
       return;
     }
-    // agent
+    // agent — explicit pick supersedes any pre-plan stash
+    session.autoApproveBeforePlan = false;
+    session.autoApprove = false;
     this.setPlanActive(session, false); // posts displayMode → "agent"
     if (session.client) {
       try { await session.client.setMode(ACT_MODE_ID); }
       catch (e) { vscode.window.showErrorMessage(`Couldn't switch mode: ${(e as Error).message}`); }
     }
+  }
+
+  /** Restore Auto accept after Approve / Abandon leave Plan (not on Reject). */
+  private restoreAutoApproveAfterPlan(session: Session): void {
+    const next = restoreAutoApproveAfterPlan(session.autoApproveBeforePlan);
+    session.autoApprove = next.autoApprove;
+    session.autoApproveBeforePlan = next.autoApproveBeforePlan;
   }
 
   /**
@@ -759,6 +780,9 @@ See design doc for the full state machine diagram.`;
       // three verdicts speak a consistent protocol. If the user attached a
       // comment, post it as their user bubble immediately and append it to the
       // wire-level prompt — same pattern as reject/cancel.
+      // Restore pre-plan Auto accept before lowering the gate so the toolbar
+      // (and permission auto-approve) land on YOLO, not Agent, for implement.
+      this.restoreAutoApproveAfterPlan(session);
       this.setPlanActive(session, false);
       // Cancel + content-suppress the rest of the planning turn so any
       // post-tool filler does not paint; the [Plan approved] follow-up below
@@ -846,15 +870,19 @@ See design doc for the full state machine diagram.`;
       return;
     }
 
-    // abandoned: drop the gate, return to agent mode. The wire-level prompt is
-    // always prefixed with the [Plan cancelled] marker (per the primer
-    // contract). With a comment, the marker precedes the user's words; without
-    // one, the marker stands alone.
+    // abandoned: drop the gate, return to the pre-plan act mode (Auto accept
+    // if that was on, else Agent). The wire-level prompt is always prefixed
+    // with the [Plan cancelled] marker (per the primer contract). With a
+    // comment, the marker precedes the user's words; without one, the marker
+    // stands alone.
+    this.restoreAutoApproveAfterPlan(session);
     this.setPlanActive(session, false);
     if (!feedback) {
       this.emit(session, {
         type: "planNotice",
-        text: "Plan abandoned — switched to Agent mode.",
+        text: session.autoApprove
+          ? "Plan abandoned — switched to Auto accept."
+          : "Plan abandoned — switched to Agent mode.",
       });
     }
     const promptToGrok = feedback ? `[Plan cancelled] ${feedback}` : "[Plan cancelled]";
@@ -2386,6 +2414,7 @@ See design doc for the full state machine diagram.`;
     // Applies to resumed sessions too (the config is global, not per-session).
     const configAutoApprove = this.configForcesAutoApprove();
     session.autoApprove = rememberedYolo || configAutoApprove;
+    session.autoApproveBeforePlan = false;
     session.planActive = false;
     session.afterTurn = undefined;
     session.hasHistory = false;
@@ -2527,7 +2556,13 @@ See design doc for the full state machine diagram.`;
       if (gen !== session.gen) return;
       if (id === "plan") {
         // CLI entered plan mode (covers the agent self-initiating it from a
-        // natural-language request). Raise our gate so the exit is enforced.
+        // natural-language request). Stash Auto accept so Approve / Abandon
+        // can restore it, then raise our gate so the exit is enforced.
+        session.autoApproveBeforePlan = captureAutoApproveBeforePlan(
+          session.planActive,
+          session.autoApprove,
+          session.autoApproveBeforePlan,
+        );
         session.autoApprove = false;
         this.setPlanActive(session, true);
       } else if (session === this.focused) {
@@ -2910,8 +2945,22 @@ See design doc for the full state machine diagram.`;
         // events during loadSession, which our modeChanged handler honors by
         // raising the gate. Override that here with the actual verdict-driven
         // decision (see plan-restore.ts) so a Cancelled or Approved session
-        // doesn't come back stuck in Plan mode.
+        // doesn't come back stuck in Plan mode. Also keep Auto accept in sync:
+        // a replayed plan enter may have stashed YOLO; if the verdict leaves
+        // the gate down, restore it. If we're staying in Plan, ensure a stash
+        // exists so a later Approve returns to Auto accept (config-forced or
+        // otherwise) rather than Agent.
         const decision = decideRestoreState(saved);
+        if (decision.planActive) {
+          session.autoApproveBeforePlan = captureAutoApproveBeforePlan(
+            session.planActive,
+            session.autoApprove,
+            session.autoApproveBeforePlan,
+          );
+          session.autoApprove = false;
+        } else if (session.autoApproveBeforePlan) {
+          this.restoreAutoApproveAfterPlan(session);
+        }
         this.setPlanActive(session, decision.planActive);
         const targetMode = decision.cliMode === "plan" ? "plan" : ACT_MODE_ID;
         try { await client.setMode(targetMode); } catch { /* best-effort */ }
