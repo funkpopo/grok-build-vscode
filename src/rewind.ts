@@ -11,6 +11,15 @@
  * `force: true` is required for the execute to actually truncate (without it
  * the CLI returns success:false with empty arrays — the TUI confirmation gate).
  *
+ * **CLI semantics (0.2.111):** execute(target N) **discards** prompt N and every
+ * later turn (exclusive — remaining points are `0..N-1`). `prompt_text` is the
+ * discarded target's full text (for the composer). Tip N is not a valid target.
+ *
+ * **Disk gap:** execute updates in-memory state + often `chat_history.jsonl`, but
+ * **does not truncate `updates.jsonl`**, which `session/load` replays — so a
+ * post-rewind reload can resurrect discarded turns. Client backstop:
+ * `truncateUpdatesJsonl` / `truncateChatHistoryJsonl` / `truncateRewindPointsJsonl`.
+ *
  * User-bubble mapping: the extension's hidden primer (and other non-bubbled
  * turns) still create rewind points. `userFacingRewindPoints` strips those so
  * the Nth visible user bubble aligns with the Nth user-facing point.
@@ -195,15 +204,17 @@ export function userFacingRewindPoints(points: RewindPoint[]): RewindPoint[] {
 /**
  * Result of mapping a visible user bubble to a wire rewind execute target.
  *
- * - **to bubble** (`undoingTip: false`): keep this message; discard later turns.
+ * - **from bubble** (`undoingTip: false`): execute *this* wire index — CLI
+ *   discards this turn and everything after; `prompt_text` is this message.
  * - **undo tip** (`undoingTip: true`): the first user message is alone (it *is*
- *   the tip) — execute the previous checkpoint (often the hidden primer) so the
- *   turn can still be rolled back. Confirm copy uses `bubble`, not `execute`.
+ *   the tip — CLI forbids execute(tip)). Execute the previous checkpoint (often
+ *   the hidden primer) so the turn can still be rolled back. Confirm + composer
+ *   use `bubble`, not execute's `prompt_text` (which is the primer).
  */
 export interface UserBubbleRewind {
   /** Wire target for `_x.ai/rewind/execute`. */
   execute: RewindPoint;
-  /** The user-facing bubble the user clicked (confirm preview). */
+  /** The user-facing bubble the user clicked (confirm preview + composer). */
   bubble: RewindPoint;
   undoingTip: boolean;
 }
@@ -211,10 +222,11 @@ export interface UserBubbleRewind {
 /**
  * Map a 0-based visible user-bubble index to a rewind target.
  *
- * Non-tip bubbles → rewind *to* that message. The first user message always
- * has a button: when it is also the tip (sole user turn), map to the previous
- * wire point (primer etc.) so the turn can still be undone. Later tips return
- * null (nothing after them to discard, and undo-tip is first-only).
+ * Non-tip bubbles → execute that wire index (CLI discards it + later turns).
+ * The first user message always has a button: when it is also the tip (sole
+ * user turn), map to the previous wire point (primer etc.) so the turn can
+ * still be undone. Later tips return null (CLI cannot execute the tip; there
+ * is no wire target that discards only the tip).
  *
  * `allPoints` is the full list from `/points` (primer included) so tip
  * detection uses the real max `prompt_index`.
@@ -230,7 +242,7 @@ export function resolveUserBubbleRewind(
   if (!bubble) return null;
   const maxIdx = Math.max(...allPoints.map((p) => p.promptIndex));
   if (bubble.promptIndex < maxIdx) {
-    // Keep this message; discard everything after it.
+    // Discard this message and everything after (CLI exclusive semantics).
     return { execute: bubble, bubble, undoingTip: false };
   }
   // Tip. Only the first user bubble (sole turn) may undo via the prior checkpoint.
@@ -238,6 +250,33 @@ export function resolveUserBubbleRewind(
   const prev = previousRewindPoint(allPoints, bubble.promptIndex);
   if (!prev) return null;
   return { execute: prev, bubble, undoingTip: true };
+}
+
+/**
+ * Text to put in the composer after a successful rewind.
+ *
+ * Prefer the bubble's full text (webview `_copyText`). Fall back to execute's
+ * `prompt_text` only when not undoing via a prior checkpoint — undoing the tip
+ * through the primer returns the primer text on the wire, which must never
+ * land in the composer.
+ */
+export function rewindComposerText(opts: {
+  bubbleText?: string | null;
+  promptText?: string | null;
+  promptPreview?: string | null;
+  undoingTip?: boolean;
+}): string {
+  const fromBubble = String(opts.bubbleText ?? "").trim();
+  if (fromBubble) return fromBubble;
+  if (!opts.undoingTip) {
+    const fromResult = String(opts.promptText ?? "").trim();
+    if (fromResult && !isPrimerText(fromResult) && !/^\s*<system-reminder>/.test(fromResult)) {
+      return fromResult;
+    }
+  }
+  const preview = String(opts.promptPreview ?? "").trim();
+  if (preview && !isPrimerText(preview)) return preview;
+  return "";
 }
 
 /** Nearest rewind point strictly before `promptIndex`, or null. */
@@ -264,10 +303,10 @@ export function rewindConfirmMessage(
   if (opts?.undoingTip) {
     const scope =
       mode === "conversation_only"
-        ? "This turn will be discarded from the conversation."
+        ? "This turn will be discarded from the conversation and its text put back in the composer."
         : mode === "files_only" || mode === "code_only"
           ? "Files will be restored to their snapshot before this turn; conversation stays."
-          : "This turn will be discarded, and files restored to their snapshot before it.";
+          : "This turn will be discarded, files restored to their snapshot before it, and the text put back in the composer.";
     return (
       `Discard this turn?\n\n` +
       `"${clipped}"\n\n` +
@@ -277,12 +316,12 @@ export function rewindConfirmMessage(
   }
   const scope =
     mode === "conversation_only"
-      ? "Conversation history after this turn will be discarded."
+      ? "This message and everything after it will be discarded; the text is put back in the composer."
       : mode === "files_only" || mode === "code_only"
-        ? "Files will be restored to their snapshot at this turn; conversation stays."
-        : "Conversation after this turn will be discarded, and files restored to their snapshot then.";
+        ? "Files will be restored to their snapshot before this turn; conversation stays."
+        : "This message and everything after it will be discarded, files restored, and the text put back in the composer.";
   return (
-    `Rewind to this message?\n\n` +
+    `Rewind from this message?\n\n` +
     `"${clipped}"\n\n` +
     `${scope}\n` +
     `This cannot be undone (unless you have the changes in git).`
@@ -384,27 +423,28 @@ export function parseRewindPointsJsonl(text: string): RewindDiskPoint[] {
 }
 
 /**
- * Compute the file restore plan for rewinding *to* `targetPromptIndex`
- * (keep that turn; discard everything after).
+ * Compute the file restore plan for execute(target N) — CLI **discards** turn N
+ * and every later turn, so files return to their state *before* turn N.
  *
- * For each file first touched by a later turn, the pre-turn snapshot on that
- * earliest later point is the correct restore target:
+ * For each file first touched by the discarded range (`prompt_index >= N`), the
+ * pre-turn snapshot on that earliest discarded point is the restore target:
  *   - `content: null` → delete the file (it did not exist then)
  *   - `content: string` → write that body back
  *
- * Files only modified at/before the target are left alone.
+ * Files only modified before N are left alone.
  */
 export function computeRewindRestoreActions(
   points: RewindDiskPoint[],
   targetPromptIndex: number,
 ): RewindRestoreAction[] {
   if (!Number.isFinite(targetPromptIndex)) return [];
-  const later = points
-    .filter((p) => p.promptIndex > targetPromptIndex)
+  // Inclusive: discard N and after (matches CLI exclusive conversation truncate).
+  const discarded = points
+    .filter((p) => p.promptIndex >= targetPromptIndex)
     .sort((a, b) => a.promptIndex - b.promptIndex);
-  // path → restore content (null = delete). First (earliest) later point wins.
+  // path → restore content (null = delete). First (earliest) discarded point wins.
   const byPath = new Map<string, string | null>();
-  for (const p of later) {
+  for (const p of discarded) {
     for (const snap of Object.values(p.fileSnapshots)) {
       const key = snap.path || "";
       if (!key || byPath.has(key)) continue;
@@ -463,4 +503,96 @@ export function summarizeRewindRestoreActions(actions: RewindRestoreAction[]): {
     else deleted++;
   }
   return { written, deleted, paths };
+}
+
+// ─── History truncate backstop (updates.jsonl gap) ───────────────────────────
+//
+// CLI execute discards turns in-memory and may rewrite chat_history, but
+// `updates.jsonl` (what `session/load` replays) is left intact — a reload after
+// rewind resurrects discarded user/agent bubbles. Truncate client-side to
+// match execute(target N) ≡ keep prompts with index < N.
+
+function splitJsonlLines(text: string): string[] {
+  if (!text) return [];
+  return text.replace(/^\uFEFF/, "").split(/\n/).filter((l) => l.trim().length > 0);
+}
+
+/**
+ * Truncate `updates.jsonl` so only turns with prompt index `< target` remain.
+ * Counts each `user_message_chunk` as the start of the next prompt (0-based).
+ * Non-JSON / non-update lines are kept until the cut.
+ */
+export function truncateUpdatesJsonl(text: string, targetPromptIndex: number): string {
+  if (!Number.isFinite(targetPromptIndex) || targetPromptIndex < 0) return text;
+  const lines = splitJsonlLines(text);
+  const kept: string[] = [];
+  let userPromptCount = 0;
+  for (const line of lines) {
+    let su: string | undefined;
+    try {
+      const j = JSON.parse(line) as { params?: { update?: { sessionUpdate?: string } } };
+      su = j.params?.update?.sessionUpdate;
+    } catch {
+      kept.push(line);
+      continue;
+    }
+    if (su === "user_message_chunk") {
+      if (userPromptCount >= targetPromptIndex) break;
+      userPromptCount++;
+    }
+    kept.push(line);
+  }
+  return kept.length ? kept.join("\n") + "\n" : "";
+}
+
+/**
+ * Truncate `chat_history.jsonl` at the first user row with
+ * `prompt_index >= target` (that row and everything after are dropped).
+ * Rows without `prompt_index` (system / synthetic) before the cut stay.
+ */
+export function truncateChatHistoryJsonl(text: string, targetPromptIndex: number): string {
+  if (!Number.isFinite(targetPromptIndex) || targetPromptIndex < 0) return text;
+  const lines = splitJsonlLines(text);
+  const kept: string[] = [];
+  for (const line of lines) {
+    try {
+      const j = JSON.parse(line) as { type?: string; prompt_index?: unknown };
+      if (
+        j.type === "user" &&
+        typeof j.prompt_index === "number" &&
+        Number.isFinite(j.prompt_index) &&
+        j.prompt_index >= targetPromptIndex
+      ) {
+        break;
+      }
+    } catch {
+      // keep corrupt lines until we know better
+    }
+    kept.push(line);
+  }
+  return kept.length ? kept.join("\n") + "\n" : "";
+}
+
+/**
+ * Truncate `rewind_points.jsonl` to points with `prompt_index < target`.
+ */
+export function truncateRewindPointsJsonl(text: string, targetPromptIndex: number): string {
+  if (!Number.isFinite(targetPromptIndex) || targetPromptIndex < 0) return text;
+  const kept: string[] = [];
+  for (const line of splitJsonlLines(text)) {
+    try {
+      const j = JSON.parse(line) as { prompt_index?: unknown; promptIndex?: unknown };
+      const idx =
+        typeof j.prompt_index === "number"
+          ? j.prompt_index
+          : typeof j.promptIndex === "number"
+            ? j.promptIndex
+            : null;
+      if (idx != null && idx >= targetPromptIndex) continue;
+    } catch {
+      // keep unparseable
+    }
+    kept.push(line);
+  }
+  return kept.length ? kept.join("\n") + "\n" : "";
 }

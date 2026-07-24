@@ -56,20 +56,37 @@ extension always confirms in VS Code UI, then passes `force: true`.
 Rewinding to the current tip errors:
 `Cannot rewind to prompt #N — current prompt index is N. Valid targets: 0..N`.
 
+### CLI semantics (execute is exclusive)
+
+`execute(target N)` **discards** prompt N and every later turn (remaining
+points are `0..N-1`). `prompt_text` is the discarded target's full text — put
+it back in the composer for re-edit. Tip N is never a valid execute target.
+
+### Disk gap: `updates.jsonl` is not truncated
+
+On 0.2.111, execute updates in-memory rewind state (and may rewrite
+`chat_history.jsonl`) but **leaves `updates.jsonl` intact**. `session/load`
+replays from `updates.jsonl`, so a naive reload after execute resurrects
+discarded bubbles (partial / full history). Extension backstop:
+`truncateUpdatesJsonl` / `truncateChatHistoryJsonl` / `truncateRewindPointsJsonl`
+in `src/rewind.ts`, applied after dispose and before reload.
+
 ## Extension mapping
 
 | UI | Flow |
 |---|---|
-| **User bubble → Rewind** (primary) | Hover user message → action row (Copy · Rewind · time) → confirm → execute → reload |
+| **User bubble → Rewind** (primary) | Hover user message → action row (Copy · Rewind · time) → confirm → execute → file restore → dispose → history truncate → reload → **composer prefill** |
 | `Grok: Rewind Conversation` (command palette only) | QuickPick fallback (newest first, tip excluded) — **not** in the gear menu |
 
 **Bubble index → wire index:** the hidden plan-mode primer is a real rewind point
 (`prompt_index` 0 typically) but never a bubble. `userFacingRewindPoints` /
 `resolveUserBubbleRewind` strip primer / system-reminder / marker-only plan
-verdicts so bubble `N` maps to the Nth user-facing point. The **first** user
-bubble always shows Rewind: when it is also the tip (sole turn), execute uses
-the previous checkpoint (`undoingTip`, usually the primer) so the turn can still
-be discarded; later tips hide the button.
+verdicts so bubble `N` maps to the Nth user-facing point. Non-tip bubbles
+execute their wire index (discard that turn + later). The **first** user bubble
+always shows Rewind: when it is also the tip (sole turn), execute uses the
+previous checkpoint (`undoingTip`, usually the primer); later tips hide the
+button (CLI cannot execute the tip). Composer text prefers the bubble's full
+`_copyText`; undoing via primer never uses wire `prompt_text` (that's the primer).
 
 Pure helpers: `src/rewind.ts`. ACP: `AcpClient.listRewindPoints` / `executeRewind`.
 
@@ -77,7 +94,7 @@ Pure helpers: `src/rewind.ts`. ACP: `AcpClient.listRewindPoints` / `executeRewin
 
 - Fork (#48) branches **conversation only** — rewind is the complementary feature that restores **file** snapshots.
 - After compact, rewinding *before* the compaction checkpoint can fail ("Try rewinding to a prompt after the compaction point instead") — surface `error` as-is.
-- Probes: `research/rewind-probe.cjs`, `research/rewind-execute-probe.cjs`, `research/rewind-e2e-probe.cjs`.
+- Probes: `research/rewind-probe.cjs`, `research/rewind-execute-probe.cjs`, `research/rewind-e2e-probe.cjs`, `research/_rewind-updates-probe.cjs`.
 
 ## File restore: CLI delete gap (0.2.111)
 
@@ -99,6 +116,6 @@ trimmed on execute (later points remain readable for a client backstop).
 
 **Extension backstop** (`computeRewindRestoreActions` + `applyRewindFileRestore` in
 `sidebar.ts`): after a successful execute, re-read `rewind_points.jsonl`, for each
-file first touched by a later turn write the pre-snapshot body or `unlink` when
-`content` is null, then revert/close open editors so dirty buffers can't re-save
-the discarded edits.
+file first touched by a discarded turn (`prompt_index >= target`) write the
+pre-snapshot body or `unlink` when `content` is null, then revert/close open
+editors so dirty buffers can't re-save the discarded edits.

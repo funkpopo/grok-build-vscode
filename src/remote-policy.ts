@@ -199,6 +199,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   expandCommandOutputs: "mirror",
   steerByDefault: "mirror",
   focusInput: "mirror",
+  setComposerText: "mirror",
   sessions: "mirror",
   sessionDot: "mirror",
   queuedSends: "mirror",

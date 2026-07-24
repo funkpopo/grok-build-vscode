@@ -117,12 +117,16 @@ import {
   formatRewindPointLabel,
   resolveUserBubbleRewind,
   rewindConfirmMessage,
+  rewindComposerText,
   selectableRewindPoints,
   userFacingRewindPoints,
   parseRewindPointsJsonl,
   computeRewindRestoreActions,
   resolveRewindWorkspacePath,
   summarizeRewindRestoreActions,
+  truncateUpdatesJsonl,
+  truncateChatHistoryJsonl,
+  truncateRewindPointsJsonl,
   type RewindPoint,
   type RewindRestoreAction,
 } from "./rewind";
@@ -1316,7 +1320,7 @@ See design doc for the full state machine diagram.`;
    * + mode `all`; then reloads the same session so the chat matches the
    * truncated history.
    */
-  async rewindFocusedSession(userBubbleIndex?: number): Promise<void> {
+  async rewindFocusedSession(userBubbleIndex?: number, bubbleText?: string): Promise<void> {
     const session = this.focused;
     if (!session.client || !session.activeSessionId) {
       return void vscode.window.showWarningMessage("Start a session before rewinding it.");
@@ -1375,7 +1379,7 @@ See design doc for the full state machine diagram.`;
             point: p,
           }));
         const pick = await vscode.window.showQuickPick(items, {
-          placeHolder: "Rewind to which message? (discards everything after it)",
+          placeHolder: "Rewind from which message? (discards it and later turns)",
           ignoreFocusOut: true,
           matchOnDescription: true,
           matchOnDetail: true,
@@ -1411,9 +1415,10 @@ See design doc for the full state machine diagram.`;
       // content is null (new files). Re-apply from rewind_points.jsonl and
       // sync open editors so the workspace matches the conversation.
       const cwd = session.cwd || this.workspaceRoot();
+      const sessionId = session.activeSessionId;
       const restore = this.applyRewindFileRestore(
         cwd,
-        session.activeSessionId,
+        sessionId,
         result.targetPromptIndex,
       );
       const nFiles = Math.max(result.revertedFiles.length, restore.paths.length);
@@ -1431,9 +1436,33 @@ See design doc for the full state machine diagram.`;
       }
       await this.syncEditorsAfterRewind(cwd, restore.actions);
 
-      const resumeId = session.activeSessionId;
+      // Composer text BEFORE dispose — bubble text wins; undoingTip must not
+      // use execute's prompt_text (that's the primer when undoing the sole turn).
+      const composerText = rewindComposerText({
+        bubbleText,
+        promptText: result.promptText,
+        promptPreview: confirmPoint.promptPreview,
+        undoingTip,
+      });
+
+      // Kill the process before rewriting history files (Windows locks).
+      // CLI leaves updates.jsonl untruncated — session/load would resurrect
+      // discarded turns without this backstop.
+      const client = session.client;
+      session.client = undefined;
+      if (client) await client.dispose();
+      this.truncateSessionHistoryAfterRewind(cwd, sessionId, result.targetPromptIndex);
+
       this.emit(session, { type: "clearMessages" });
-      await this.startSession(resumeId);
+      await this.startSession(sessionId);
+
+      if (composerText) {
+        // Ephemeral UI action (not buffered) — re-focus must not re-stamp it.
+        this.post({ type: "setComposerText", text: composerText, focus: true });
+      } else {
+        this.post({ type: "focusInput" });
+      }
+
       const fileNote =
         nFiles > 0
           ? ` Restored ${nFiles} file${nFiles === 1 ? "" : "s"}${
@@ -1450,11 +1479,49 @@ See design doc for the full state machine diagram.`;
           : restore.errors.length > 0
             ? ` Some files could not be fully restored — see Output → Grok.`
             : "";
+      const composerNote = composerText ? " Message restored to the composer." : "";
       void vscode.window.showInformationMessage(
-        `Rewound to this message.${fileNote}${conflictNote}`,
+        `Rewound from this message.${composerNote}${fileNote}${conflictNote}`,
       );
     } catch (e: any) {
       void vscode.window.showErrorMessage(`Rewind failed: ${e?.message ?? e}`);
+    }
+  }
+
+  /**
+   * Client backstop for the CLI's updates.jsonl gap after rewind/execute:
+   * truncate chat_history + updates + rewind_points so session/load matches
+   * the discarded turns (execute(target N) keeps prompts with index < N).
+   */
+  private truncateSessionHistoryAfterRewind(
+    cwd: string,
+    sessionId: string,
+    targetPromptIndex: number,
+  ): void {
+    try {
+      const grokHome = resolveGrokHome(process.env);
+      const dir = path.join(sessionsDirFor(grokHome, cwd), sessionId);
+      const specs: { name: string; truncate: (t: string, n: number) => string }[] = [
+        { name: "updates.jsonl", truncate: truncateUpdatesJsonl },
+        { name: "chat_history.jsonl", truncate: truncateChatHistoryJsonl },
+        { name: "rewind_points.jsonl", truncate: truncateRewindPointsJsonl },
+      ];
+      for (const { name, truncate } of specs) {
+        const p = path.join(dir, name);
+        if (!fs.existsSync(p)) continue;
+        const before = fs.readFileSync(p, "utf8");
+        const after = truncate(before, targetPromptIndex);
+        if (after !== before) {
+          fs.writeFileSync(p, after, "utf8");
+          this.output.appendLine(
+            `[rewind] truncated ${name} at prompt #${targetPromptIndex}`,
+          );
+        }
+      }
+    } catch (e: any) {
+      this.output.appendLine(
+        `[rewind] history truncate failed: ${e?.message ?? e}`,
+      );
     }
   }
 
@@ -3161,6 +3228,7 @@ See design doc for the full state machine diagram.`;
       case "rewindSession":
         await this.rewindFocusedSession(
           typeof msg.userBubbleIndex === "number" ? msg.userBubbleIndex : undefined,
+          typeof msg.text === "string" ? msg.text : undefined,
         );
         break;
       case "workflowControl":

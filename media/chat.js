@@ -2054,8 +2054,8 @@
         const rewindBtn = document.createElement("button");
         rewindBtn.className = "msg-action-btn msg-rewind-btn";
         rewindBtn.type = "button";
-        rewindBtn.title = "Rewind to this message (discard later turns + restore files)";
-        rewindBtn.setAttribute("aria-label", "Rewind to this message");
+        rewindBtn.title = "Rewind from this message (discard it and later turns; restore text to composer)";
+        rewindBtn.setAttribute("aria-label", "Rewind from this message");
         rewindBtn.innerHTML = `<span class="msg-action-glyph">${ICON.undo}</span>`;
         actions.appendChild(rewindBtn);
       }
@@ -5724,6 +5724,20 @@
         // type a prompt immediately.
         input.focus();
         break;
+      case "setComposerText":
+        // Rewind (P2-9): put the discarded turn's text back for re-edit.
+        // Replace (don't append) — the point of rewind is a clean re-send.
+        input.value = typeof msg.text === "string" ? msg.text : "";
+        renderInputHighlight();
+        updateSendButton();
+        if (msg.focus !== false) {
+          input.focus();
+          try {
+            const n = input.value.length;
+            input.setSelectionRange(n, n);
+          } catch { /* some hosts lack setSelectionRange on the mock */ }
+        }
+        break;
       case "grokUpdateStatus":
         // Reply to the About panel's checkGrokUpdate. The check also reports the
         // CLI's current version — adopt it, since the ACP handshake doesn't always
@@ -6556,7 +6570,9 @@
       const msgEl = msgRewindBtn.closest(".msg.user");
       const idx = msgEl ? Number(msgEl.dataset.userBubbleIndex) : NaN;
       if (!Number.isInteger(idx) || idx < 0) return;
-      vscode.postMessage({ type: "rewindSession", userBubbleIndex: idx });
+      // Full bubble text for composer restore (prompt_preview on the wire is truncated).
+      const text = typeof msgEl._copyText === "string" ? msgEl._copyText : "";
+      vscode.postMessage({ type: "rewindSession", userBubbleIndex: idx, text });
       return;
     }
     closePopovers();

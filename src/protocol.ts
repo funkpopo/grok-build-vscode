@@ -142,6 +142,9 @@ export type HostMsg =
   // Selection / Send File / @-mention so the user can type a prompt right away.
   // Ephemeral UI action, not session-scoped (goes via `post`, never buffered).
   | { type: "focusInput" }
+  // Prefill the composer (P2-9 rewind) — discarded turn text for re-edit.
+  // Ephemeral; not buffered (a re-focus must not re-stamp a one-shot restore).
+  | { type: "setComposerText"; text: string; focus?: boolean }
   // nextOffset = the index offset the next load-more should request — ids CONSUMED
   // from the on-disk index, not entries shown (hidden subagent sessions occupy
   // slots without producing rows).
@@ -265,7 +268,8 @@ export type WebviewMsg =
   // Rewind UI (P2-9): truncate chat + restore files.
   // `userBubbleIndex` (0-based among visible user bubbles) comes from the
   // per-message Rewind button; omit it for the command-palette QuickPick path.
-  | { type: "rewindSession"; userBubbleIndex?: number }
+  // `text` is the bubble's full copy text (composer restore; preview is truncated).
+  | { type: "rewindSession"; userBubbleIndex?: number; text?: string }
   // Workflow card controls (P2-10): pause / resume / stop by display name.
   | { type: "workflowControl"; action: "pause" | "resume" | "stop"; displayName: string }
   // `/btw` side question (P3-16): host calls `_x.ai/btw` instead of
@@ -294,7 +298,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   agentError: true, agentEnd: true, exit: true, setBusy: true, summarizing: true,
   sessionContext: true, clearMessages: true, onboarding: true, error: true,
   xaiNotification: true, subagentUpdate: true, runProgress: true, commandOutput: true, expandCommandOutputs: true, steerByDefault: true,
-  focusInput: true, sessions: true, sessionDot: true, queuedSends: true,
+  focusInput: true, setComposerText: true, sessions: true, sessionDot: true, queuedSends: true,
   steerUnavailable: true, usage: true, authMethod: true, btwExchange: true,
   doctorReport: true,
 };

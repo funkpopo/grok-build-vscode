@@ -11,11 +11,15 @@ import {
   previousRewindPoint,
   isHiddenRewindPoint,
   rewindConfirmMessage,
+  rewindComposerText,
   parseRewindPointsJsonl,
   parseRewindDiskPoint,
   computeRewindRestoreActions,
   resolveRewindWorkspacePath,
   summarizeRewindRestoreActions,
+  truncateUpdatesJsonl,
+  truncateChatHistoryJsonl,
+  truncateRewindPointsJsonl,
   REWIND_MODES,
 } from "../src/rewind";
 
@@ -163,9 +167,9 @@ describe("selectableRewindPoints / labels", () => {
 
   it("builds a confirm message for the target bubble", () => {
     const msg = rewindConfirmMessage(pts[1], "all");
-    expect(msg).toMatch(/Rewind to this message/i);
+    expect(msg).toMatch(/Rewind from this message/i);
     expect(msg).toContain("beta");
-    expect(msg).toMatch(/discarded|restored/i);
+    expect(msg).toMatch(/discarded|composer/i);
   });
 });
 
@@ -250,11 +254,45 @@ describe("userFacingRewindPoints / resolveUserBubbleRewind", () => {
     expect(resolveUserBubbleRewind([{ ...u0, promptIndex: 0 }], 0)).toBeNull();
   });
 
-  it("confirm copy distinguishes undo-tip vs rewind-to", () => {
+  it("confirm copy distinguishes undo-tip vs rewind-from", () => {
     const undo = rewindConfirmMessage(u0, "all", { undoingTip: true });
     expect(undo).toMatch(/Discard this turn/i);
+    expect(undo).toMatch(/composer/i);
     const to = rewindConfirmMessage(u0, "all");
-    expect(to).toMatch(/Rewind to this message/i);
+    expect(to).toMatch(/Rewind from this message/i);
+    expect(to).toMatch(/composer/i);
+  });
+});
+
+describe("rewindComposerText", () => {
+  it("prefers full bubble text over wire prompt_text", () => {
+    expect(
+      rewindComposerText({
+        bubbleText: " full bubble ",
+        promptText: "wire",
+        promptPreview: "prev",
+      }),
+    ).toBe("full bubble");
+  });
+
+  it("uses prompt_text when not undoing tip and no bubble text", () => {
+    expect(
+      rewindComposerText({
+        promptText: "MSG_B only. No tools.",
+        promptPreview: "MSG_B…",
+      }),
+    ).toBe("MSG_B only. No tools.");
+  });
+
+  it("ignores primer prompt_text when undoing tip (sole first message)", () => {
+    const primer = "[grok-build-vscode primer v5]\n\n## HIDDEN PRIMER\nok";
+    expect(
+      rewindComposerText({
+        promptText: primer,
+        promptPreview: "ONLY_USER_MSG. No tools.",
+        undoingTip: true,
+      }),
+    ).toBe("ONLY_USER_MSG. No tools.");
   });
 });
 
@@ -297,11 +335,10 @@ describe("disk snapshot restore plan (CLI delete backstop)", () => {
     expect(pts[1].afterSnapshots["created.txt"].content).toBe("NEWFILE\n");
   });
 
-  it("rewinding to baseline deletes new files and restores prior content", () => {
+  it("execute(0) discards all turns' file changes (pre-turn-0 state)", () => {
     const pts = parseRewindPointsJsonl(jsonl);
     const actions = computeRewindRestoreActions(pts, 0);
-    // earliest later point is #1: created→delete, seed→v1
-    // point #2's seed is skipped (already seen); other.ts added from #2
+    // point #0 empty; #1 first touch: created→delete, seed→v1; #2 other.ts
     expect(actions).toEqual([
       { kind: "delete", path: "created.txt" },
       { kind: "write", path: "other.ts", content: "a" },
@@ -312,19 +349,24 @@ describe("disk snapshot restore plan (CLI delete backstop)", () => {
     expect(sum.written).toBe(2);
   });
 
-  it("rewinding to turn 1 only undoes turn 2+", () => {
+  it("execute(1) discards turn 1 and later (CLI exclusive)", () => {
     const pts = parseRewindPointsJsonl(jsonl);
     const actions = computeRewindRestoreActions(pts, 1);
-    // created.txt was born in turn 1 — keep it (not in later pre-snaps as first touch)
+    // Turn 1's pre-snaps win: created→delete, seed→v1; turn 2 adds other.ts
     expect(actions).toEqual([
+      { kind: "delete", path: "created.txt" },
       { kind: "write", path: "other.ts", content: "a" },
-      { kind: "write", path: "seed.txt", content: "V2\n" },
+      { kind: "write", path: "seed.txt", content: "v1\n" },
     ]);
   });
 
-  it("rewinding to tip yields no file actions", () => {
+  it("execute(2) undoes only the tip turn's file changes", () => {
     const pts = parseRewindPointsJsonl(jsonl);
-    expect(computeRewindRestoreActions(pts, 2)).toEqual([]);
+    expect(computeRewindRestoreActions(pts, 2)).toEqual([
+      { kind: "write", path: "other.ts", content: "a" },
+      { kind: "write", path: "seed.txt", content: "V2\n" },
+    ]);
+    // Beyond last point — no snapshots in range
     expect(computeRewindRestoreActions(pts, 99)).toEqual([]);
   });
 
@@ -343,5 +385,77 @@ describe("disk snapshot restore plan (CLI delete backstop)", () => {
     expect(resolveRewindWorkspacePath("/tmp/w", "a/b.txt")).toBe("/tmp/w/a/b.txt");
     expect(resolveRewindWorkspacePath("/tmp/w", "/abs/x")).toBe("/abs/x");
     expect(resolveRewindWorkspacePath("D:\\proj", "C:\\other\\f.txt")).toBe("C:\\other\\f.txt");
+  });
+});
+
+describe("history truncate backstop (updates.jsonl gap)", () => {
+  const updates = [
+    JSON.stringify({
+      method: "session/update",
+      params: { update: { sessionUpdate: "user_message_chunk", content: { text: "A" } } },
+    }),
+    JSON.stringify({
+      method: "session/update",
+      params: { update: { sessionUpdate: "agent_message_chunk", content: { text: "ra" } } },
+    }),
+    JSON.stringify({
+      method: "_x.ai/session/update",
+      params: { update: { sessionUpdate: "turn_completed" } },
+    }),
+    JSON.stringify({
+      method: "session/update",
+      params: { update: { sessionUpdate: "user_message_chunk", content: { text: "B" } } },
+    }),
+    JSON.stringify({
+      method: "session/update",
+      params: { update: { sessionUpdate: "agent_message_chunk", content: { text: "rb" } } },
+    }),
+    JSON.stringify({
+      method: "session/update",
+      params: { update: { sessionUpdate: "user_message_chunk", content: { text: "C" } } },
+    }),
+  ].join("\n") + "\n";
+
+  it("truncateUpdatesJsonl keeps only prompts before target", () => {
+    const t1 = truncateUpdatesJsonl(updates, 1);
+    expect(t1).toContain('"text":"A"');
+    expect(t1).toContain("turn_completed");
+    expect(t1).not.toContain('"text":"B"');
+    expect(t1).not.toContain('"text":"C"');
+    // Counting user_message_chunk lines:
+    expect([...t1.matchAll(/user_message_chunk/g)]).toHaveLength(1);
+
+    const t0 = truncateUpdatesJsonl(updates, 0);
+    expect(t0).toBe("");
+  });
+
+  it("truncateChatHistoryJsonl cuts at prompt_index >= target", () => {
+    const ch =
+      [
+        JSON.stringify({ type: "system", content: "sys" }),
+        JSON.stringify({ type: "user", content: "info", synthetic_reason: "x" }),
+        JSON.stringify({ type: "user", content: "A", prompt_index: 0 }),
+        JSON.stringify({ type: "assistant", content: "ra" }),
+        JSON.stringify({ type: "user", content: "B", prompt_index: 1 }),
+        JSON.stringify({ type: "assistant", content: "rb" }),
+      ].join("\n") + "\n";
+    const out = truncateChatHistoryJsonl(ch, 1);
+    expect(out).toContain('"prompt_index":0');
+    expect(out).toContain('"content":"ra"');
+    expect(out).not.toContain('"prompt_index":1');
+    expect(out).not.toContain('"content":"B"');
+  });
+
+  it("truncateRewindPointsJsonl drops points at/after target", () => {
+    const rp =
+      [
+        JSON.stringify({ prompt_index: 0, prompt_preview: "A" }),
+        JSON.stringify({ prompt_index: 1, prompt_preview: "B" }),
+        JSON.stringify({ prompt_index: 2, prompt_preview: "C" }),
+      ].join("\n") + "\n";
+    const out = truncateRewindPointsJsonl(rp, 1);
+    expect(out).toContain('"prompt_index":0');
+    expect(out).not.toContain('"prompt_index":1');
+    expect(out).not.toContain('"prompt_index":2');
   });
 });
