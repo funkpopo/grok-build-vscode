@@ -3911,19 +3911,117 @@
     scrollToBottom();
   }
 
-  /** Plan-gate block: always name the three review actions; if a plan card is
-   *  already open, point at it and give it a brief attention flash. */
+  /** Legacy planBlocked notice (older buffers / no request id). Prefer planGateRequest. */
   function addPlanBlockedNotice(kind, target) {
-    const openCard = messagesEl.querySelector(".card.plan:not(.resolved)");
     const text = (typeof GrokWebviewHelpers !== "undefined" && GrokWebviewHelpers.planBlockedNoticeText)
-      ? GrokWebviewHelpers.planBlockedNoticeText(kind, target, !!openCard)
-      : `Plan mode blocked an action. Use Approve & implement, Keep planning, or Cancel when a plan card appears — or switch to Agent.`;
+      ? GrokWebviewHelpers.planBlockedNoticeText(kind, target, false)
+      : `Plan mode blocked an action. Approve to run once, Reject to refuse, or Keep planning.`;
     addPlanNotice(text);
-    if (openCard) {
-      openCard.classList.add("plan-card-attention");
-      try { openCard.scrollIntoView({ block: "nearest", behavior: "smooth" }); } catch { /* happy-dom */ }
-      setTimeout(() => openCard.classList.remove("plan-card-attention"), 1600);
+  }
+
+  const PLAN_GATE_VERDICT_LABEL = {
+    approved: "Approved",
+    rejected: "Rejected",
+    keep_planning: "Keep planning",
+  };
+
+  function resolvePlanGateCardEl(el, verdict) {
+    el.classList.add("resolved");
+    const actions = el.querySelector(".card-actions");
+    if (actions) actions.remove();
+    if (!el.querySelector(".plan-verdict-label")) {
+      const status = document.createElement("div");
+      status.className = "plan-verdict-label plan-verdict-" +
+        (verdict === "approved" ? "approved" : verdict === "keep_planning" ? "rejected" : "abandoned");
+      status.textContent = PLAN_GATE_VERDICT_LABEL[verdict] ?? "Resolved";
+      el.appendChild(status);
     }
+  }
+
+  /**
+   * Mid-plan tool gate: a terminal/write/permission is held until the user
+   * picks Approve (run once) / Reject / Keep planning. Not "switch to Agent" —
+   * the need is to decide on this tool call, not leave plan mode.
+   */
+  function addPlanGateCard(requestId, kind, target) {
+    clearWelcome();
+    hideGrokking();
+    commitAgentTurn();
+    const H = typeof GrokWebviewHelpers !== "undefined" ? GrokWebviewHelpers : null;
+    const titleText = H && H.planGateCardTitle ? H.planGateCardTitle(kind) : "Approve this action?";
+    const subText = H && H.planGateCardSubtitle
+      ? H.planGateCardSubtitle(kind)
+      : "Plan mode blocked this action. Approve to allow it once, Reject to refuse it, or Keep planning.";
+    const targetText = H && H.planGateTargetLabel
+      ? H.planGateTargetLabel(kind, target)
+      : String(target || "");
+
+    const el = document.createElement("div");
+    el.className = "card plan plan-gate";
+    el.dataset.planGateReqId = String(requestId);
+
+    const title = document.createElement("div");
+    title.className = "card-title";
+    title.textContent = titleText;
+    el.appendChild(title);
+
+    const sub = document.createElement("div");
+    sub.className = "card-subtitle";
+    sub.textContent = subText;
+    el.appendChild(sub);
+
+    if (targetText) {
+      const body = document.createElement("pre");
+      body.className = "plan-gate-target";
+      body.textContent = targetText;
+      el.appendChild(body);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "card-actions";
+    const mk = (label, cls, verdict) => {
+      const b = document.createElement("button");
+      b.textContent = label;
+      if (cls) b.classList.add(cls);
+      b.onclick = () => {
+        vscode.postMessage({
+          type: "planGateAnswer",
+          requestId,
+          verdict,
+        });
+        resolvePlanGateCardEl(el, verdict);
+        showGrokking();
+      };
+      return b;
+    };
+    actions.appendChild(mk("Approve", "primary", "approved"));
+    actions.appendChild(mk("Reject", "danger", "rejected"));
+    actions.appendChild(mk("Keep planning", "", "keep_planning"));
+    el.appendChild(actions);
+    messagesEl.appendChild(el);
+    forceScrollToBottom();
+  }
+
+  /** Attach the late plan-file link once the host finishes the snapshot write. */
+  function applyPlanReviewLink(requestId, planPath, planName) {
+    if (!planPath) return;
+    const cards = [...messagesEl.querySelectorAll(".card.plan:not(.plan-escape)")];
+    const el = cards.find((c) => c.dataset.planReqId === String(requestId));
+    if (!el || el.querySelector(".plan-file-link")) return;
+    // Match live addPlanCard order: title → subtitle → plan-file link → body.
+    const body = el.querySelector(".plan-body");
+    const tools = document.createElement("div");
+    tools.className = "plan-tools";
+    const link = document.createElement("a");
+    link.className = "file-ref-link plan-file-link";
+    link.href = planPath;
+    link.title = planPath;
+    const code = document.createElement("code");
+    code.textContent = planName || pathBaseName(planPath);
+    link.appendChild(code);
+    tools.appendChild(link);
+    if (body) el.insertBefore(tools, body);
+    else el.appendChild(tools);
   }
 
   // Automatic (context-full) compaction note. The CLI can compact at a turn's
@@ -6053,6 +6151,9 @@
       case "exitPlanRequest":
         addPlanCard(msg.req);
         break;
+      case "planReviewLink":
+        applyPlanReviewLink(msg.requestId, msg.planPath, msg.planName);
+        break;
       case "planResolved": {
         // Replayed (on re-focus) right after the buffered exitPlanRequest, or
         // live right after the user's verdict — collapse the matching card if
@@ -6077,6 +6178,15 @@
       case "planBlocked":
         addPlanBlockedNotice(msg.kind, msg.target);
         break;
+      case "planGateRequest":
+        addPlanGateCard(msg.requestId, msg.kind, msg.target);
+        break;
+      case "planGateResolved": {
+        const cards = [...messagesEl.querySelectorAll(".card.plan-gate")];
+        const el = cards.find((c) => c.dataset.planGateReqId === String(msg.requestId) && !c.classList.contains("resolved"));
+        if (el) resolvePlanGateCardEl(el, msg.verdict);
+        break;
+      }
       case "promptComplete":
         // Finalize the Thinking block and update the token donut — but DO NOT
         // clear busy here. agentEnd is now the single authoritative "user can

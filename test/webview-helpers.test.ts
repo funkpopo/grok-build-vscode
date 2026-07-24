@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 // @ts-expect-error — plain JS module, no types
-import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, planBlockedNoticeText } from "../media/webview-helpers.js";
+import { looksLikeFileRef, formatRelativeTime, FILE_EXTS, modelDisplayName, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, parseAttachmentContext, parseSelectionBlocks, parseImageTags, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, planBlockedNoticeText, planGateCardTitle, planGateCardSubtitle, planGateTargetLabel } from "../media/webview-helpers.js";
 import { buildPrompt, buildPromptWithImages } from "../src/prompt-builder";
 import { makeExplicitChip, makeImplicitChip, makeImageChip } from "../src/chips";
 
@@ -835,20 +835,14 @@ describe("stripUnsupportedTex", () => {
 });
 
 describe("planBlockedNoticeText", () => {
-  it("names the three plan-card actions when no card is open", () => {
+  it("names Approve / Reject / Keep planning for a blocked tool", () => {
     const t = planBlockedNoticeText("permission", "execute", false);
-    expect(t).toContain("declined a execute request");
-    expect(t).toMatch(/Approve & implement/);
+    expect(t).toContain("blocked a execute request");
+    expect(t).toMatch(/Approve/);
+    expect(t).toMatch(/Reject/);
     expect(t).toMatch(/Keep planning/);
-    expect(t).toMatch(/Cancel/);
-    expect(t).toMatch(/switch to Agent/i);
-  });
-
-  it("points at the open plan card when one exists", () => {
-    const t = planBlockedNoticeText("terminal", "npm install", true);
-    expect(t).toContain("blocked a command: npm install");
-    expect(t).toMatch(/plan card above/i);
-    expect(t).not.toMatch(/switch to Agent/i);
+    expect(t).not.toMatch(/toolbar/i);
+    expect(t).not.toMatch(/Switch to Agent/);
   });
 
   it("clips long targets", () => {
@@ -856,6 +850,15 @@ describe("planBlockedNoticeText", () => {
     const t = planBlockedNoticeText("write", long, false);
     expect(t).toContain("…");
     expect(t.length).toBeLessThan(200 + 80);
+  });
+});
+
+describe("planGateCard helpers", () => {
+  it("titles and subtitles distinguish command / write / permission", () => {
+    expect(planGateCardTitle("terminal")).toMatch(/command/i);
+    expect(planGateCardTitle("write")).toMatch(/write/i);
+    expect(planGateCardSubtitle("terminal")).toMatch(/Approve/);
+    expect(planGateTargetLabel("terminal", "  Get-ChildItem  src  ")).toBe("Get-ChildItem src");
   });
 });
 

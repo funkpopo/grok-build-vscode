@@ -8,7 +8,7 @@
 //     the feedback textarea is non-empty (the `...(comment ? {comment} : {})` spread)
 //   - "Approve & implement" sends verdict:"approved" and never a comment
 //   - after a click the card resolves and both buttons + textarea disable
-//   - planNotice / planBlocked render a .plan-notice that names the three actions
+//   - planGateRequest paints Approve / Reject / Keep planning for a held tool
 //
 // What it deliberately does NOT cover: real VS Code rendering, CSS, the actual
 // acquireVsCodeApi bridge, and the round-trip to client.setMode/client.prompt.
@@ -265,37 +265,104 @@ describe("plan card (real chat.js in a DOM)", () => {
     expect(posted).toEqual([{ type: "openFile", path: "/tmp/grok/restored-plan.md" }]);
   });
 
-  it("renders a plan-notice for planNotice and actionable planBlocked how-tos", () => {
+  it("renders a plan-notice for legacy planBlocked", () => {
     const { window, doc } = bootWebview();
     dispatch(window, { type: "planNotice", text: "Staying in Plan mode — nothing was written." });
     dispatch(window, { type: "planBlocked", kind: "terminal", target: "npm install" });
-    dispatch(window, { type: "planBlocked", kind: "write", target: "src/app.ts" });
-    dispatch(window, { type: "planBlocked", kind: "permission", target: "execute" });
 
     const notices = [...doc.querySelectorAll(".plan-notice")].map((n) => n.textContent);
-    expect(notices).toHaveLength(4);
+    expect(notices).toHaveLength(2);
     expect(notices[0]).toContain("Staying in Plan mode");
     expect(notices[1]).toContain("blocked a command: npm install");
-    expect(notices[1]).toMatch(/Approve & implement/);
-    expect(notices[1]).toMatch(/Keep planning/);
-    expect(notices[1]).toMatch(/Cancel/);
-    expect(notices[1]).toMatch(/switch to Agent/i);
-    expect(notices[2]).toContain("blocked a write to src/app.ts");
-    expect(notices[2]).toMatch(/Approve & implement/);
-    expect(notices[3]).toContain("declined a execute request");
-    expect(notices[3]).toMatch(/Keep planning/);
+    expect(notices[1]).toMatch(/Approve/);
   });
 
-  it("planBlocked with an open plan card points at the card actions (not Agent)", () => {
-    const { window, doc } = bootWebview();
-    dispatch(window, { type: "exitPlanRequest", req: { id: 99, plan: "do the thing" } });
-    dispatch(window, { type: "planBlocked", kind: "permission", target: "execute" });
+  it("planGateRequest shows Approve / Reject / Keep planning and posts the verdict", () => {
+    const { window, posted, doc } = bootWebview();
+    dispatch(window, {
+      type: "planGateRequest",
+      requestId: 42,
+      kind: "terminal",
+      target: "Get-ChildItem -Path src",
+    });
 
-    const notice = [...doc.querySelectorAll(".plan-notice")].pop()!;
-    expect(notice.textContent).toContain("declined a execute request");
-    expect(notice.textContent).toMatch(/plan card above/i);
-    expect(notice.textContent).toMatch(/Approve & implement/);
-    expect(notice.textContent).not.toMatch(/switch to Agent/i);
-    expect(doc.querySelector(".card.plan")!.classList.contains("plan-card-attention")).toBe(true);
+    const card = doc.querySelector(".card.plan-gate")!;
+    expect(card).not.toBeNull();
+    expect(card.querySelector(".card-title")!.textContent).toMatch(/command/i);
+    expect(card.querySelector(".plan-gate-target")!.textContent).toContain("Get-ChildItem");
+    const labels = [...card.querySelectorAll(".card-actions button")].map((b) => b.textContent);
+    expect(labels).toEqual(["Approve", "Reject", "Keep planning"]);
+
+    const approve = [...card.querySelectorAll(".card-actions button")]
+      .find((b) => b.textContent === "Approve") as HTMLButtonElement;
+    click(window, approve);
+    expect(posted).toEqual([{ type: "planGateAnswer", requestId: 42, verdict: "approved" }]);
+    expect(card.classList.contains("resolved")).toBe(true);
+    expect(card.querySelector(".plan-verdict-label")!.textContent).toBe("Approved");
+    expect(card.querySelector(".card-actions")).toBeNull();
+  });
+
+  it("planGateRequest Reject posts rejected and Keep planning posts keep_planning", () => {
+    const { window, posted, doc } = bootWebview();
+    dispatch(window, {
+      type: "planGateRequest",
+      requestId: 7,
+      kind: "write",
+      target: "src/app.ts",
+    });
+    const reject = [...doc.querySelectorAll(".card.plan-gate .card-actions button")]
+      .find((b) => b.textContent === "Reject") as HTMLButtonElement;
+    click(window, reject);
+    expect(posted).toEqual([{ type: "planGateAnswer", requestId: 7, verdict: "rejected" }]);
+
+    posted.length = 0;
+    dispatch(window, {
+      type: "planGateRequest",
+      requestId: 8,
+      kind: "permission",
+      target: "execute",
+    });
+    const keep = [...doc.querySelectorAll(".card.plan-gate:not(.resolved) .card-actions button")]
+      .find((b) => b.textContent === "Keep planning") as HTMLButtonElement;
+    click(window, keep);
+    expect(posted).toEqual([{ type: "planGateAnswer", requestId: 8, verdict: "keep_planning" }]);
+  });
+
+  it("planGateResolved collapses a replayed gate card so it can't stay actionable", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "planGateRequest",
+      requestId: 9,
+      kind: "terminal",
+      target: "npm install",
+    });
+    dispatch(window, { type: "planGateResolved", requestId: 9, verdict: "keep_planning" });
+    const card = doc.querySelector(".card.plan-gate")!;
+    expect(card.classList.contains("resolved")).toBe(true);
+    expect(card.querySelector(".card-actions")).toBeNull();
+    expect(card.querySelector(".plan-verdict-label")!.textContent).toBe("Keep planning");
+  });
+
+  it("planReviewLink attaches the open-in-editor link after the card is already painted", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "exitPlanRequest", req: { id: 77, plan: "1. step" } });
+    expect(doc.querySelector(".card.plan .plan-file-link")).toBeNull();
+    // Buttons must already be live before the snapshot write finishes.
+    const labels = [...doc.querySelectorAll(".card.plan .card-actions button")].map((b) => b.textContent);
+    expect(labels).toEqual(["Approve & implement", "Keep planning", "Cancel"]);
+
+    dispatch(window, {
+      type: "planReviewLink",
+      requestId: 77,
+      planPath: "/tmp/grok/plan77.md",
+      planName: "plan77.md",
+    });
+    const link = doc.querySelector(".card.plan .plan-file-link") as HTMLAnchorElement;
+    expect(link).not.toBeNull();
+    expect(link.title).toBe("/tmp/grok/plan77.md");
+    expect(link.querySelector("code")!.textContent).toBe("plan77.md");
+    // Link sits before the plan body (same order as a path-bearing first paint).
+    const body = doc.querySelector(".card.plan .plan-body")!;
+    expect(link.parentElement!.nextElementSibling).toBe(body);
   });
 });

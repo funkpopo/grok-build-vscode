@@ -4,7 +4,10 @@ import {
   isMutatingKind,
   isReadOnlyCommand,
   isPlanFileWrite,
+  pickAllowOption,
   pickRejectOption,
+  planGateCardTitle,
+  planGateTargetLabel,
   shouldBlockWrite,
   shouldBlockTerminal,
   shouldRejectPermission,
@@ -271,6 +274,24 @@ describe("permission gating", () => {
     ])).toBe("y");
     expect(pickRejectOption([{ optionId: "x", kind: "allow_once" }])).toBeUndefined();
     expect(pickRejectOption([])).toBeUndefined();
+  });
+
+  it("pickAllowOption prefers allow_once then allow_always", () => {
+    expect(pickAllowOption([
+      { optionId: "r", kind: "reject_once" },
+      { optionId: "a", kind: "allow_once" },
+    ])).toBe("a");
+    expect(pickAllowOption([
+      { optionId: "r", kind: "reject_once" },
+      { optionId: "aa", kind: "allow_always" },
+    ])).toBe("aa");
+    expect(pickAllowOption([{ optionId: "r", kind: "reject_once" }])).toBeUndefined();
+  });
+
+  it("planGateCardTitle / planGateTargetLabel cover terminal and write", () => {
+    expect(planGateCardTitle("terminal")).toMatch(/command/i);
+    expect(planGateCardTitle("write")).toMatch(/write/i);
+    expect(planGateTargetLabel("terminal", "  npm install  ")).toBe("npm install");
   });
 });
 

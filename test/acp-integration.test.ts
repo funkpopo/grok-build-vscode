@@ -9,11 +9,11 @@
 //     fs/write_text_file handler must (a) allow the write and (b) emit a
 //     `planFileContent` event so the review card has content.
 //   - Workspace-write gate: when planActive is true, fs/write_text_file for a
-//     path *inside* the workspace must be refused with PLAN_BLOCKED, and the
-//     client must emit a `mutationBlocked` event so the UI can show a notice.
+//     path *inside* the workspace holds for a `planGateRequest`; Reject refuses
+//     with PLAN_BLOCKED, Approve runs the write once.
 //   - Terminal-create gate: when planActive is true, mutating commands (rm,
-//     npm install, etc.) must be refused at terminal/create; read-only ones
-//     (ls, grep, head, etc.) must be allowed and reach the terminal handler.
+//     npm install, etc.) hold for planGateRequest; read-only ones (ls, grep,
+//     head, etc.) are allowed and reach the terminal handler.
 //   - exit_plan_mode round-trip: the host receives an `exitPlanRequest` event
 //     whose `plan` field is populated from the snooped plan.md content.
 //
@@ -43,7 +43,7 @@ beforeAll(() => {
   }
 });
 
-/** Collect `mutationBlocked` events so tests can assert on the gate. */
+/** Collect named events so tests can assert on the gate. */
 function collect<T>(client: AcpClient, event: string): T[] {
   const out: T[] = [];
   client.on(event, (v) => out.push(v));
@@ -274,17 +274,19 @@ describe("ACP integration (real subprocess, fake CLI)", () => {
     expect(fs.readFileSync(planPathFromEnv, "utf8")).toContain("TEST PLAN");
   });
 
-  it("gate: planActive=true blocks fs/write_text_file inside the workspace", async () => {
+  it("gate: planActive=true holds fs/write_text_file for plan-gate Reject", async () => {
     client.planActive = true;
-    const blocked = collect<{ kind: string; target: string }>(client, "mutationBlocked");
+    const gateP = waitFor<{ requestId: number | string; kind: string; target: string }>(client, "planGateRequest");
+    const promptP = client.prompt("SCENARIO_WORKSPACE_WRITE");
 
-    await client.prompt("SCENARIO_WORKSPACE_WRITE");
-
-    expect(blocked).toHaveLength(1);
-    expect(blocked[0].kind).toBe("write");
+    const gate = await gateP;
+    expect(gate.kind).toBe("write");
     // Normalize slashes — the fake CLI uses `+ "/"` on its end, so the path
     // arrives as forward-slash; the host's gate works either way.
-    expect(blocked[0].target.replace(/\\/g, "/")).toBe(workspace.replace(/\\/g, "/") + "/file.ts");
+    expect(gate.target.replace(/\\/g, "/")).toBe(workspace.replace(/\\/g, "/") + "/file.ts");
+    client.respondPlanGate(gate.requestId, "rejected");
+
+    await promptP;
     // The fake CLI got an error reply (visible on its stderr).
     await waitForStderr(stderr, /WRITE_RESPONSE.*"error"/);
     expect(stderr.join("")).toMatch(/WRITE_RESPONSE.*"error"/);
@@ -292,60 +294,92 @@ describe("ACP integration (real subprocess, fake CLI)", () => {
     expect(fs.existsSync(path.join(workspace, "file.ts"))).toBe(false);
   });
 
-  it("gate: planActive=true blocks relative fs/write_text_file paths inside the workspace", async () => {
+  it("gate: planActive=true holds relative fs/write_text_file for plan-gate Reject", async () => {
     client.planActive = true;
-    const blocked = collect<{ kind: string; target: string }>(client, "mutationBlocked");
+    const gateP = waitFor<{ requestId: number | string; kind: string; target: string }>(client, "planGateRequest");
+    const promptP = client.prompt("SCENARIO_RELATIVE_WORKSPACE_WRITE");
 
-    await client.prompt("SCENARIO_RELATIVE_WORKSPACE_WRITE");
+    const gate = await gateP;
+    expect(gate.kind).toBe("write");
+    expect(gate.target).toBe("relative-file.ts");
+    client.respondPlanGate(gate.requestId, "rejected");
 
-    expect(blocked).toHaveLength(1);
-    expect(blocked[0].kind).toBe("write");
-    expect(blocked[0].target).toBe("relative-file.ts");
+    await promptP;
     expect(stderr.join("")).toMatch(/WRITE_RESPONSE.*"error"/);
     expect(fs.existsSync(path.join(workspace, "relative-file.ts"))).toBe(false);
   });
 
-  it("gate: planActive=false allows fs/write_text_file inside the workspace", async () => {
-    client.planActive = false;
-    const blocked = collect<unknown>(client, "mutationBlocked");
+  it("gate: planActive=true Approve on write runs the write once", async () => {
+    client.planActive = true;
+    const gateP = waitFor<{ requestId: number | string; kind: string; target: string }>(client, "planGateRequest");
+    const promptP = client.prompt("SCENARIO_WORKSPACE_WRITE");
 
-    await client.prompt("SCENARIO_WORKSPACE_WRITE");
+    const gate = await gateP;
+    expect(gate.kind).toBe("write");
+    client.respondPlanGate(gate.requestId, "approved");
 
-    expect(blocked).toHaveLength(0);
+    await promptP;
     expect(fs.readFileSync(path.join(workspace, "file.ts"), "utf8")).toBe("// new file");
   });
 
-  it("gate: planActive=true blocks terminal/create with a mutating command", async () => {
+  it("gate: planActive=false allows fs/write_text_file inside the workspace", async () => {
+    client.planActive = false;
+    const gates = collect<unknown>(client, "planGateRequest");
+
+    await client.prompt("SCENARIO_WORKSPACE_WRITE");
+
+    expect(gates).toHaveLength(0);
+    expect(fs.readFileSync(path.join(workspace, "file.ts"), "utf8")).toBe("// new file");
+  });
+
+  it("gate: planActive=true holds mutating terminal/create for plan-gate Reject", async () => {
     client.planActive = true;
-    const blocked = collect<{ kind: string; target: string }>(client, "mutationBlocked");
+    const gateP = waitFor<{ requestId: number | string; kind: string; target: string }>(client, "planGateRequest");
+    const promptP = client.prompt("SCENARIO_MUTATING_TERMINAL");
 
-    await client.prompt("SCENARIO_MUTATING_TERMINAL");
+    const gate = await gateP;
+    expect(gate.kind).toBe("terminal");
+    expect(gate.target).toContain("rm");
+    client.respondPlanGate(gate.requestId, "rejected");
 
-    expect(blocked).toHaveLength(1);
-    expect(blocked[0].kind).toBe("terminal");
-    expect(blocked[0].target).toContain("rm");
+    await promptP;
     expect((client as any).__terminalCalls()).toBe(0); // handler was never reached
   });
 
-  it("gate: planActive=true blocks terminal/create with mutating args on an otherwise read-only head", async () => {
+  it("gate: planActive=true Approve on terminal runs the command once", async () => {
     client.planActive = true;
-    const blocked = collect<{ kind: string; target: string }>(client, "mutationBlocked");
+    const gateP = waitFor<{ requestId: number | string; kind: string; target: string }>(client, "planGateRequest");
+    const promptP = client.prompt("SCENARIO_MUTATING_TERMINAL");
 
-    await client.prompt("SCENARIO_MUTATING_READONLY_HEAD_TERMINAL");
+    const gate = await gateP;
+    expect(gate.kind).toBe("terminal");
+    client.respondPlanGate(gate.requestId, "approved");
 
-    expect(blocked).toHaveLength(1);
-    expect(blocked[0].kind).toBe("terminal");
-    expect(blocked[0].target).toContain("sed");
+    await promptP;
+    expect((client as any).__terminalCalls()).toBe(1);
+  });
+
+  it("gate: planActive=true holds terminal with mutating args on an otherwise read-only head", async () => {
+    client.planActive = true;
+    const gateP = waitFor<{ requestId: number | string; kind: string; target: string }>(client, "planGateRequest");
+    const promptP = client.prompt("SCENARIO_MUTATING_READONLY_HEAD_TERMINAL");
+
+    const gate = await gateP;
+    expect(gate.kind).toBe("terminal");
+    expect(gate.target).toContain("sed");
+    client.respondPlanGate(gate.requestId, "keep_planning");
+
+    await promptP;
     expect((client as any).__terminalCalls()).toBe(0);
   });
 
   it("gate: planActive=true allows terminal/create with a read-only command (ls)", async () => {
     client.planActive = true;
-    const blocked = collect<unknown>(client, "mutationBlocked");
+    const gates = collect<unknown>(client, "planGateRequest");
 
     await client.prompt("SCENARIO_READONLY_TERMINAL");
 
-    expect(blocked).toHaveLength(0);
+    expect(gates).toHaveLength(0);
     expect((client as any).__terminalCalls()).toBe(1); // handler was called → command allowed
   });
 

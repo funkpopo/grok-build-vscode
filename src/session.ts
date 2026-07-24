@@ -117,6 +117,21 @@ export class Session {
    *  card (title + outcome) for replay on a resumed session, then deleted. */
   pendingPermissions = new Map<number | string, { title: string; toolCallId?: string; options: { optionId: string; kind: string }[] }>();
 
+  /**
+   * Mid-plan tool-gate cards awaiting a user verdict. Permission-originated
+   * gates need the allow/reject option ids to reply on the permission channel;
+   * mutation-originated gates (terminal/write) are resolved via
+   * `AcpClient.respondPlanGate` and only need a marker so re-focus can collapse
+   * the card. Keyed by the JSON-RPC / permission request id.
+   */
+  pendingPlanGates = new Map<number | string, {
+    source: "permission" | "mutation";
+    kind: string;
+    target: string;
+    allowOptionId?: string;
+    rejectOptionId?: string;
+  }>();
+
   /** Most recent plan text seen for this session (exit_plan_mode fallback). */
   lastPlanText = "";
 

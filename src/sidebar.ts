@@ -71,7 +71,7 @@ import {
   detectAuthMethod,
 } from "./grok-config";
 import { fileUriToPath, parseFileRef, shouldReadFileInline } from "./file-ref";
-import { pickRejectOption, shouldRejectPermission } from "./plan-gate";
+import { pickAllowOption, pickRejectOption, shouldRejectPermission } from "./plan-gate";
 import { appendPlanEntry, countsAsUserBubble, decideRestoreState } from "./plan-restore";
 import { planReviewFileBaseName, sanitizePlanReviewFilePart } from "./plan-review";
 import { GROK_PRIMER, isPrimerText, isPrimerSummary } from "./grok-primer";
@@ -704,6 +704,34 @@ See design doc for the full state machine diagram.`;
    * is the action signal the primer trains. Lifecycle events still reach the
    * webview so `busy` clears when the cancelled turn ends.
    */
+  /**
+   * Resolve a mid-plan tool-gate card (Approve / Reject / Keep planning).
+   * Permission-originated gates reply on the permission channel; terminal/write
+   * gates release the held ACP request via `respondPlanGate`. Approving runs
+   * that one call only — the plan gate stays up.
+   */
+  private handlePlanGateAnswer(
+    requestId: number | string,
+    verdict: "approved" | "rejected" | "keep_planning",
+  ): void {
+    const session = this.focused;
+    const client = session.client;
+    if (!client) return;
+    const pending = session.pendingPlanGates.get(requestId);
+    session.pendingPlanGates.delete(requestId);
+    if (pending?.source === "permission") {
+      const optId = verdict === "approved"
+        ? pending.allowOptionId
+        : pending.rejectOptionId;
+      if (optId) client.respondPermission(requestId, optId);
+    } else {
+      // mutation (terminal/write) or unknown — release the held call
+      client.respondPlanGate(requestId, verdict);
+    }
+    this.emit(session, { type: "planGateResolved", requestId, verdict });
+    this.setStatus(session, "working");
+  }
+
   private handleExitPlan(
     requestId: number | string,
     verdict: "approved" | "abandoned" | "rejected",
@@ -2706,28 +2734,38 @@ See design doc for the full state machine diagram.`;
     });
     client.on("permissionRequest", (req: PermissionRequest) => {
       if (gen !== session.gen) return;
-      // While planning, decline any mutating permission outright. Agent mode
-      // skips this prompt for edits it deems safe — the fs/terminal gate is the
-      // real backstop — but if the CLI *does* ask, we say no without bothering
-      // the user.
+      // While planning, a mutating permission is NOT auto-rejected: the user
+      // needs Approve / Reject / Keep planning on a plan-gate card (the failure
+      // mode is "tool needs a decision", not "switch to Agent").
       if (session.planActive && shouldRejectPermission(req.toolCall?.kind, {
         active: true,
         workspaceRoot: cwd,
       })) {
+        const allowId = pickAllowOption(req.options);
         const rejectId = pickRejectOption(req.options);
-        if (rejectId) {
-          client.respondPermission(req.id, rejectId);
-          // Same channel as fs/terminal blocks so the webview can attach the
-          // actionable "Approve / Keep planning / Cancel" how-to (and highlight
-          // an open plan card when one exists).
-          this.emit(session, {
-            type: "planBlocked",
+        // Need both options so Approve and Reject/Keep planning can reply on
+        // the permission channel; otherwise fall through to the normal card.
+        if (allowId && rejectId) {
+          const target =
+            req.toolCall?.title ||
+            req.toolCall?.kind ||
+            "tool";
+          session.pendingPlanGates.set(req.id, {
+            source: "permission",
             kind: "permission",
-            target: req.toolCall?.kind ?? "tool",
+            target: String(target),
+            allowOptionId: allowId,
+            rejectOptionId: rejectId,
           });
+          this.emit(session, {
+            type: "planGateRequest",
+            requestId: req.id,
+            kind: "permission",
+            target: String(target),
+          });
+          this.setStatus(session, "needs-you");
           return;
         }
-        // No decline option offered — fall through and let the user decide.
       }
       if (session.autoApprove) {
         const opt = req.options.find((o) => o.kind === "allow_always") ??
@@ -2743,9 +2781,22 @@ See design doc for the full state machine diagram.`;
       this.emit(session, { type: "permissionRequest", req });
       this.setStatus(session, "needs-you");
     });
-    client.on("mutationBlocked", (info: { kind: string; target: string }) => {
+    // Mid-plan terminal/write hold: user must Approve (run once) / Reject /
+    // Keep planning before the ACP request completes.
+    client.on("planGateRequest", (req: { requestId: number | string; kind: string; target: string }) => {
       if (gen !== session.gen) return;
-      this.emit(session, { type: "planBlocked", kind: info.kind, target: info.target });
+      session.pendingPlanGates.set(req.requestId, {
+        source: "mutation",
+        kind: req.kind,
+        target: req.target,
+      });
+      this.emit(session, {
+        type: "planGateRequest",
+        requestId: req.requestId,
+        kind: req.kind,
+        target: req.target,
+      });
+      this.setStatus(session, "needs-you");
     });
     client.on("planFileContent", (content: string) => {
       if (gen !== session.gen) return;
@@ -3150,6 +3201,9 @@ See design doc for the full state machine diagram.`;
         break;
       case "exitPlanAnswer":
         this.handleExitPlan(msg.requestId, msg.verdict, msg.comment);
+        break;
+      case "planGateAnswer":
+        this.handlePlanGateAnswer(msg.requestId, msg.verdict);
         break;
       case "questionAnswer":
         this.focused.client?.respondQuestion(msg.requestId, msg.answers ?? {}, msg.annotations ?? {});
@@ -4230,22 +4284,30 @@ See design doc for the full state machine diagram.`;
 
   private async postExitPlanRequest(req: ExitPlanRequest, session: Session, gen: number): Promise<void> {
     const plan = req.plan || session.lastPlanText;
-    let snapshot: { path: string; name: string } | undefined;
-    try {
-      snapshot = await this.createPlanReviewSnapshot(plan);
-    } catch (e) {
-      this.output.appendLine(`[plan-review] ${(e as Error).message}`);
-    }
-    if (gen !== session.gen) return;
     // Hold onto the plan text until the user picks a verdict so persistPlanVerdict
     // can save it. Cleared (via resolved/pending) so the next plan starts fresh.
     session.pendingPlanText = plan;
     session.lastPlanText = "";
+    // Paint the review card *before* the plan-file snapshot so Approve / Keep
+    // planning / Cancel are never gated on a slow or failing fs write. The
+    // open-in-editor link arrives a moment later via planReviewLink.
     this.emit(session, {
       type: "exitPlanRequest",
-      req: { ...req, plan, planPath: snapshot?.path, planName: snapshot?.name },
+      req: { ...req, plan },
     });
     this.setStatus(session, "needs-you");
+    try {
+      const snapshot = await this.createPlanReviewSnapshot(plan);
+      if (gen !== session.gen) return;
+      this.emit(session, {
+        type: "planReviewLink",
+        requestId: req.id,
+        planPath: snapshot.path,
+        planName: snapshot.name,
+      });
+    } catch (e) {
+      this.output.appendLine(`[plan-review] ${(e as Error).message}`);
+    }
   }
 
   private async withPlanReviewPaths<T extends { text: string }>(

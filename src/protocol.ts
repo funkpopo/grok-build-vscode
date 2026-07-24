@@ -89,13 +89,23 @@ export type HostMsg =
   // The host spreads the plan-review snapshot (planPath/planName) into the bare
   // ExitPlanRequest before posting, so the wire shape is wider than acp's type.
   | { type: "exitPlanRequest"; req: ExitPlanRequest & { planPath?: string; planName?: string } }
+  // Late plan-file link for a live review card: the card is posted first so
+  // Approve/Keep planning/Cancel never wait on the snapshot write; this fills
+  // in the open-in-editor link once the snapshot lands.
+  | { type: "planReviewLink"; requestId: number | string; planPath: string; planName: string }
   // Buffered right after the user's verdict (mirrors permissionResolved) so a
   // re-focus replays the plan card collapsed instead of actionable.
   | { type: "planResolved"; requestId: number | string; verdict: "approved" | "abandoned" | "rejected" }
   | { type: "questionRequest"; req: QuestionRequest }
   | { type: "planNotice"; text: string }
   | { type: "autoCompactNotice"; text: string }
+  // Legacy simple notice (kept for buffer replay of older sessions). New
+  // mid-plan tool holds use `planGateRequest` so the user can Approve / Reject.
   | { type: "planBlocked"; kind: string; target: string }
+  // Mid-plan tool gate: a terminal/write/permission held for user verdict.
+  // Approve runs once; Reject / Keep planning refuse. Gate stays up either way.
+  | { type: "planGateRequest"; requestId: number | string; kind: string; target: string }
+  | { type: "planGateResolved"; requestId: number | string; verdict: "approved" | "rejected" | "keep_planning" }
   | { type: "promptComplete"; meta: PromptResultMeta }
   // Context size read from grok's on-disk signals.json — the source that has a
   // real count when the turn meta can't: a cold restore (no turn yet) and a
@@ -208,6 +218,8 @@ export type WebviewMsg =
   | { type: "dropFile"; path: string; shift: boolean }
   | { type: "permissionAnswer"; requestId: number | string; optionId: string }
   | { type: "exitPlanAnswer"; requestId: number | string; verdict: "approved" | "abandoned" | "rejected"; comment?: string }
+  // Mid-plan tool gate answer (Approve / Reject / Keep planning).
+  | { type: "planGateAnswer"; requestId: number | string; verdict: "approved" | "rejected" | "keep_planning" }
   | { type: "questionAnswer"; requestId: number | string; answers?: Record<string, string>; annotations?: Record<string, { notes?: string; preview?: string }> }
   | { type: "questionCancel"; requestId: number | string }
   | { type: "setModel"; modelId: string }
@@ -276,8 +288,9 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   thoughtChunk: true, messageChunk: true, media: true, userMessageChunk: true,
   historyReplay: true, permissionHistoryQueue: true, planHistoryQueue: true,
   planProcessing: true, toolCall: true, toolCallUpdate: true, permissionRequest: true,
-  permissionResolved: true, exitPlanRequest: true, planResolved: true, questionRequest: true,
-  planNotice: true, autoCompactNotice: true, planBlocked: true, promptComplete: true, contextUsage: true, agentReset: true,
+  permissionResolved: true, exitPlanRequest: true, planReviewLink: true, planResolved: true, questionRequest: true,
+  planNotice: true, autoCompactNotice: true, planBlocked: true, planGateRequest: true, planGateResolved: true,
+  promptComplete: true, contextUsage: true, agentReset: true,
   agentError: true, agentEnd: true, exit: true, setBusy: true, summarizing: true,
   sessionContext: true, clearMessages: true, onboarding: true, error: true,
   xaiNotification: true, subagentUpdate: true, runProgress: true, commandOutput: true, expandCommandOutputs: true, steerByDefault: true,
@@ -292,7 +305,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   openDiff: true, exportExpr: true, setEffort: true, openGlobalConfig: true,
   openProjectConfig: true, runMcpList: true, showLogs: true, moveView: true,
   setShowThinking: true, setExpandCommandOutputs: true, setSteerByDefault: true,
-  dropFile: true, permissionAnswer: true, exitPlanAnswer: true, questionAnswer: true,
+  dropFile: true, permissionAnswer: true, exitPlanAnswer: true, planGateAnswer: true, questionAnswer: true,
   questionCancel: true, setModel: true, runInstallCmd: true, runGrokLogin: true,
   logout: true, checkGrokUpdate: true, updateGrok: true, recheckConnection: true,
   listSessions: true, resumeSession: true, renameSession: true, deleteSession: true,

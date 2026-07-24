@@ -20,7 +20,8 @@
     "voiceError", "chips", "commandsUpdate", "mentionResults", "userMessage", "agentStart", "thoughtChunk",
     "messageChunk", "media", "userMessageChunk", "historyReplay", "permissionHistoryQueue",
     "planHistoryQueue", "planProcessing", "toolCall", "toolCallUpdate", "permissionRequest",
-    "permissionResolved", "exitPlanRequest", "planResolved", "questionRequest", "planNotice", "autoCompactNotice", "planBlocked",
+    "permissionResolved", "exitPlanRequest", "planReviewLink", "planResolved", "questionRequest", "planNotice", "autoCompactNotice", "planBlocked",
+    "planGateRequest", "planGateResolved",
     "promptComplete", "contextUsage", "commandOutput", "expandCommandOutputs", "focusInput", "agentReset", "agentError", "agentEnd", "exit", "setBusy", "summarizing",
     "sessionContext", "clearMessages", "onboarding", "error", "xaiNotification", "subagentUpdate", "runProgress", "sessions",
     "sessionDot", "queuedSends", "steerUnavailable", "usage", "authMethod", "steerByDefault",
@@ -31,7 +32,7 @@
     "toggleChip", "openFile", "openUrl", "openDiff", "exportExpr", "setEffort",
     "openGlobalConfig", "openProjectConfig", "runMcpList", "showLogs", "moveView",
     "setShowThinking", "setExpandCommandOutputs",
-    "dropFile", "permissionAnswer", "exitPlanAnswer", "questionAnswer", "questionCancel",
+    "dropFile", "permissionAnswer", "exitPlanAnswer", "planGateAnswer", "questionAnswer", "questionCancel",
     "setModel", "runInstallCmd", "runGrokLogin", "logout", "checkGrokUpdate", "updateGrok",
     "recheckConnection", "listSessions", "resumeSession", "renameSession", "deleteSession",
     "clearAllSessions", "pickFile", "mentionQuery", "addMentionFile", "pasteImage", "voiceStart", "voiceStop",
@@ -693,15 +694,14 @@
   }
 
   /**
-   * User-facing copy when plan mode blocks a mutation / declines a permission.
-   * Always names the three plan-card actions so the notice is actionable even
-   * when no review card is on screen yet (agent tried to execute mid-plan).
+   * User-facing copy when plan mode blocks a mutation / declines a permission
+   * (legacy notice path + body text for the plan-gate card).
    *
    * @param {string} kind  "terminal" | "write" | "permission" | other
    * @param {string} [target]  command, path, or tool kind
-   * @param {boolean} [hasOpenPlanCard]  unresolved `.card.plan` already visible
+   * @param {boolean} [hasOpenPlanCard]  unused — kept for call-site compat
    */
-  function planBlockedNoticeText(kind, target, hasOpenPlanCard) {
+  function planBlockedNoticeText(kind, target, _hasOpenPlanCard) {
     const short = String(target || "").trim().replace(/\s+/g, " ");
     const clipped = short.length > 80 ? short.slice(0, 77) + "…" : short;
     let what;
@@ -711,18 +711,41 @@
       what = clipped ? `blocked a write to ${clipped}` : "blocked a write";
     } else if (kind === "permission") {
       what = clipped
-        ? `declined a ${clipped} request`
-        : "declined a mutating request";
+        ? `blocked a ${clipped} request`
+        : "blocked a mutating request";
     } else {
       what = clipped ? `blocked ${clipped}` : "blocked a mutating action";
     }
-    const how = hasOpenPlanCard
-      ? "Use Approve & implement, Keep planning, or Cancel on the plan card above."
-      : "Wait for a plan review card (Approve & implement / Keep planning / Cancel), or switch to Agent in the toolbar to allow changes.";
-    return `Plan mode ${what}. ${how}`;
+    return `Plan mode ${what}. Approve to run once, Reject to refuse, or Keep planning.`;
   }
 
-  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, isBtwSlash, parseBtwSlash, isDoctorSlash, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, planBlockedNoticeText };
+  /** Mid-plan tool-gate card chrome (mirrors src/plan-gate.ts helpers). */
+  function planGateCardTitle(kind) {
+    if (kind === "terminal") return "Approve this command?";
+    if (kind === "write") return "Approve this write?";
+    if (kind === "permission") return "Approve this action?";
+    return "Approve this action?";
+  }
+
+  function planGateCardSubtitle(kind) {
+    if (kind === "terminal") {
+      return "Plan mode blocked this command. Approve to run it once, Reject to refuse it, or Keep planning to continue researching.";
+    }
+    if (kind === "write") {
+      return "Plan mode blocked this write. Approve to write once, Reject to refuse it, or Keep planning to continue researching.";
+    }
+    return "Plan mode blocked this action. Approve to allow it once, Reject to refuse it, or Keep planning to continue researching.";
+  }
+
+  function planGateTargetLabel(kind, target) {
+    const short = String(target || "").trim().replace(/\s+/g, " ");
+    const clipped = short.length > 120 ? short.slice(0, 117) + "…" : short;
+    if (kind === "terminal") return clipped || "(command)";
+    if (kind === "write") return clipped || "(path)";
+    return clipped || kind || "action";
+  }
+
+  const api = { FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, isBtwSlash, parseBtwSlash, isDoctorSlash, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, buildQuestionAnswers, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, splitMath, stripUnsupportedTex, toolFailureText, commandProgramLabel, extractToolResultOutput, computeLineDiff, parseAttachmentContext, parseSelectionBlocks, parseImageTags, planBlockedNoticeText, planGateCardTitle, planGateCardSubtitle, planGateTargetLabel };
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = api;

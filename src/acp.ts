@@ -209,10 +209,18 @@ export class AcpClient extends EventEmitter {
 
   /**
    * Client-enforced plan gate. While true, workspace file writes and mutating
-   * shell commands are refused at the (mandatory) fs/terminal handlers — see
-   * `plan-gate.ts`. The host toggles this; the CLI's own plan mode is advisory.
+   * shell commands are held for a user verdict at the (mandatory) fs/terminal
+   * handlers — see `plan-gate.ts` + `planGateRequest`. The host toggles this;
+   * the CLI's own plan mode is advisory.
    */
   planActive = false;
+
+  /**
+   * In-flight plan-gate prompts for terminal/write: JSON-RPC request id →
+   * resolver. `true` = user approved once (run the call); `false` = reject /
+   * keep planning (return PLAN_BLOCKED). Cleared on answer, cancel, or dispose.
+   */
+  private planGateWaiters = new Map<number | string, (allow: boolean) => void>();
 
   /** Set by the host to satisfy server→client fs requests. */
   fsRead?: FsReadHandler;
@@ -729,6 +737,9 @@ export class AcpClient extends EventEmitter {
     // user reports "my turn died and I touched nothing" (#37) this line is
     // what attributes the cancel to a Stop click / plan verdict / nothing-of-ours.
     this.opts.log(`[cancel] sending session/cancel (${reason}) for ${this.sessionId}`);
+    // A cancel abandons any held plan-gate (terminal/write) so the JSON-RPC
+    // request doesn't hang the process after the turn is gone.
+    this.rejectAllPlanGates();
     // ACP defines session/cancel as a notification (no id) — sending it as a
     // request causes grok-cli to ignore it. Write directly to stdin without an
     // id and don't await a response.
@@ -738,6 +749,46 @@ export class AcpClient extends EventEmitter {
   /** Respond to a pending permission request (from the agent) with the chosen option id. */
   respondPermission(requestId: number | string, optionId: string): void {
     this.writeLine(makePermissionResponse(requestId, optionId));
+  }
+
+  /**
+   * Resolve a pending terminal/write plan-gate prompt. `approved` runs the
+   * held call once (gate stays up for later mutations); `rejected` /
+   * `keep_planning` both refuse with PLAN_BLOCKED.
+   */
+  respondPlanGate(
+    requestId: number | string,
+    verdict: "approved" | "rejected" | "keep_planning",
+  ): void {
+    const resolve = this.planGateWaiters.get(requestId);
+    if (!resolve) return;
+    this.planGateWaiters.delete(requestId);
+    resolve(verdict === "approved");
+  }
+
+  /** Drop every in-flight plan-gate waiter as a refusal (cancel / dispose). */
+  private rejectAllPlanGates(): void {
+    for (const [, resolve] of this.planGateWaiters) resolve(false);
+    this.planGateWaiters.clear();
+  }
+
+  /**
+   * Hold a mutating terminal/write until the host posts a plan-gate verdict.
+   * Emits `planGateRequest` for the UI; resolves true only on Approve.
+   */
+  private awaitPlanGate(req: {
+    id: number | string;
+    kind: "terminal" | "write";
+    target: string;
+  }): Promise<boolean> {
+    return new Promise((resolve) => {
+      this.planGateWaiters.set(req.id, resolve);
+      this.emit("planGateRequest", {
+        requestId: req.id,
+        kind: req.kind,
+        target: req.target,
+      });
+    });
   }
 
   /** Respond to a pending exit_plan_mode request with the user's verdict
@@ -777,6 +828,7 @@ export class AcpClient extends EventEmitter {
    * callers can ignore the returned promise — the kill is still initiated now.
    */
   dispose(timeoutMs = 3000): Promise<void> {
+    this.rejectAllPlanGates();
     this.rl?.close();
     const proc = this.proc;
     if (!proc || proc.exitCode !== null || proc.signalCode !== null) {
@@ -954,9 +1006,16 @@ export class AcpClient extends EventEmitter {
           workspaceRoot: this.opts.cwd,
           grokHome: resolveGrokHome(this.opts.env ?? process.env),
         })) {
-          this.emit("mutationBlocked", { kind: "write", target: params.path });
-          this.respondError(id, PLAN_BLOCKED_CODE, PLAN_BLOCKED_WRITE_MSG);
-          return;
+          // Hold for Approve / Reject / Keep planning — do not auto-fail.
+          const allowed = await this.awaitPlanGate({
+            id,
+            kind: "write",
+            target: params.path,
+          });
+          if (!allowed) {
+            this.respondError(id, PLAN_BLOCKED_CODE, PLAN_BLOCKED_WRITE_MSG);
+            return;
+          }
         }
         await this.fsWrite(params.path, params.content);
         this.respondOk(id, {});
@@ -965,9 +1024,16 @@ export class AcpClient extends EventEmitter {
       if (method === "terminal/create") {
         if (!this.terminal) throw new Error("terminal handler not registered");
         if (shouldBlockTerminal(params.command, { active: this.planActive, workspaceRoot: this.opts.cwd })) {
-          this.emit("mutationBlocked", { kind: "terminal", target: params.command });
-          this.respondError(id, PLAN_BLOCKED_CODE, PLAN_BLOCKED_TERMINAL_MSG);
-          return;
+          // Hold for Approve / Reject / Keep planning — do not auto-fail.
+          const allowed = await this.awaitPlanGate({
+            id,
+            kind: "terminal",
+            target: params.command,
+          });
+          if (!allowed) {
+            this.respondError(id, PLAN_BLOCKED_CODE, PLAN_BLOCKED_TERMINAL_MSG);
+            return;
+          }
         }
         const created = this.terminal.create(params);
         this.terminalCommands.set(created.terminalId, params.command);

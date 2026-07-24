@@ -2562,6 +2562,28 @@ body.dragging { outline: 2px dashed var(--vscode-focusBorder); outline-offset: -
   transition: outline-color 0.2s ease, box-shadow 0.2s ease;
 }
 
+/* Mid-plan tool gate — Approve / Reject / Keep planning for a held command/write. */
+.card.plan.plan-gate {
+  border-left-color: var(--vscode-charts-orange, #d7ba7d);
+}
+.card.plan.plan-gate.resolved {
+  opacity: 0.75;
+}
+.card .plan-gate-target {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 140px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 11px;
+  line-height: 1.4;
+  background: var(--vscode-textCodeBlock-background, rgba(127, 127, 127, 0.12));
+  border-radius: 6px;
+  color: var(--vscode-foreground);
+}
+
 .plan-tools {
   display: flex;
   justify-content: flex-start;

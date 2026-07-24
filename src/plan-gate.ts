@@ -285,6 +285,58 @@ export function pickRejectOption(options: PermissionOptionLike[]): string | unde
 }
 
 /**
+ * Pick the option that means "yes, once" from a permission request's options.
+ * Prefers `allow_once`, then `allow_always` (still a one-shot approval at the
+ * plan-gate UI — we never promote it to sticky always-approve from this card).
+ */
+export function pickAllowOption(options: PermissionOptionLike[]): string | undefined {
+  if (!Array.isArray(options) || options.length === 0) return undefined;
+  const once = options.find((o) => o.kind === "allow_once");
+  if (once) return once.optionId;
+  const always = options.find((o) => o.kind === "allow_always" || o.kind === "allow");
+  return always?.optionId;
+}
+
+/** User verdict on a mid-plan tool gate card. */
+export type PlanGateVerdict = "approved" | "rejected" | "keep_planning";
+
+/**
+ * Short label for a plan-gate card body (command / path / permission kind).
+ * Pure so the webview + tests share one clip rule.
+ */
+export function planGateTargetLabel(kind: string, target: string | undefined): string {
+  const short = String(target || "").trim().replace(/\s+/g, " ");
+  const clipped = short.length > 120 ? short.slice(0, 117) + "…" : short;
+  if (kind === "terminal") return clipped || "(command)";
+  if (kind === "write") return clipped || "(path)";
+  return clipped || kind || "action";
+}
+
+/**
+ * Card title for a plan-gate prompt (tool blocked mid-plan, needs a user
+ * verdict before the ACP request can complete).
+ */
+export function planGateCardTitle(kind: string): string {
+  if (kind === "terminal") return "Approve this command?";
+  if (kind === "write") return "Approve this write?";
+  if (kind === "permission") return "Approve this action?";
+  return "Approve this action?";
+}
+
+/**
+ * Card subtitle: what was blocked + that plan mode stays up either way.
+ */
+export function planGateCardSubtitle(kind: string): string {
+  if (kind === "terminal") {
+    return "Plan mode blocked this command. Approve to run it once, Reject to refuse it, or Keep planning to continue researching.";
+  }
+  if (kind === "write") {
+    return "Plan mode blocked this write. Approve to write once, Reject to refuse it, or Keep planning to continue researching.";
+  }
+  return "Plan mode blocked this action. Approve to allow it once, Reject to refuse it, or Keep planning to continue researching.";
+}
+
+/**
  * True if `path` is grok's own plan file (`.grok/sessions/.../plan.md`). We
  * snoop the content of that write to populate the plan-review card, since
  * `exit_plan_mode` itself arrives with `planContent: null`.
