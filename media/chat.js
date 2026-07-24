@@ -2048,8 +2048,8 @@
       copyBtn.innerHTML = `<span class="msg-action-glyph">${ICON.copy}</span>`;
       actions.appendChild(copyBtn);
       // Rewind sits next to Copy on user bubbles only (P2-9) — not in the gear
-      // menu. First message always keeps the button (sole turn undoes via the
-      // prior checkpoint); later tips hide it (refreshUserRewindButtons).
+      // menu. Every user bubble keeps the button (including the tip — CLI
+      // execute(tip) with force:true discards only that turn).
       if (role === "user") {
         const rewindBtn = document.createElement("button");
         rewindBtn.className = "msg-action-btn msg-rewind-btn";
@@ -2097,18 +2097,15 @@
 
   /**
    * Keep each user bubble's Rewind button + data-user-bubble-index in sync.
-   * First user message always shows Rewind (sole turn = undo via prior
-   * checkpoint). Later tips hide it (nothing after them to discard).
-   * Queued (not-yet-sent) blocks are excluded.
+   * Every sent user bubble shows Rewind (including the tip). Queued
+   * (not-yet-sent) blocks are excluded.
    */
   function refreshUserRewindButtons() {
     const users = [...messagesEl.querySelectorAll(".msg.user:not(.queued)")];
     users.forEach((el, i) => {
       el.dataset.userBubbleIndex = String(i);
       const btn = el.querySelector(".msg-rewind-btn");
-      if (!btn) return;
-      // Hide later tips only — first bubble (i === 0) always keeps Rewind.
-      btn.hidden = i === users.length - 1 && i > 0;
+      if (btn) btn.hidden = false;
     });
   }
 

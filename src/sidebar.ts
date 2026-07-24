@@ -1346,8 +1346,8 @@ See design doc for the full state machine diagram.`;
       let undoingTip = false;
 
       if (typeof userBubbleIndex === "number") {
-        // Bubble button: map visible user bubble → wire execute target.
-        // First (sole) user message undoes via the previous checkpoint (primer).
+        // Bubble button: map visible user bubble → wire execute target
+        // (including the tip — force:true allows execute(tip)).
         const resolved = resolveUserBubbleRewind(points, userBubbleIndex);
         if (!resolved) {
           return void vscode.window.showInformationMessage(
@@ -1358,17 +1358,11 @@ See design doc for the full state machine diagram.`;
         confirmPoint = resolved.bubble;
         undoingTip = resolved.undoingTip;
       } else {
-        // Command palette: pick among user-facing points that aren't the tip.
-        // A sole first message still has a bubble Rewind (undo tip); the
-        // QuickPick only lists multi-turn targets.
+        // Command palette: pick among user-facing points (tip included).
         const facing = userFacingRewindPoints(points);
         const selectable = selectableRewindPoints(facing.length ? facing : points);
         if (selectable.length === 0) {
-          return void vscode.window.showInformationMessage(
-            facing.length <= 1
-              ? "Only one message so far — hover it and click Rewind to discard the turn."
-              : "No rewind points available.",
-          );
+          return void vscode.window.showInformationMessage("No rewind points available.");
         }
         const items = [...selectable]
           .sort((a, b) => b.promptIndex - a.promptIndex)

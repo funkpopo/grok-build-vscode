@@ -13,7 +13,8 @@
  *
  * **CLI semantics (0.2.111):** execute(target N) **discards** prompt N and every
  * later turn (exclusive — remaining points are `0..N-1`). `prompt_text` is the
- * discarded target's full text (for the composer). Tip N is not a valid target.
+ * discarded target's full text (for the composer). With `force: true`, the tip
+ * is a valid target (discards only the last turn).
  *
  * **Disk gap:** execute updates in-memory state + often `chat_history.jsonl`, but
  * **does not truncate `updates.jsonl`**, which `session/load` replays — so a
@@ -165,18 +166,17 @@ export function formatRewindPointDetail(p: RewindPoint): string | undefined {
 }
 
 /**
- * Points that are valid rewind *targets* — every point except the latest one
- * (rewinding to the current tip is a no-op / errors "current prompt index is N").
- * When only one point exists, returns [] (nothing to rewind to).
+ * Points that are valid rewind *targets* for the QuickPick path.
  *
- * Pass *all* points (including primer) so the tip is the true conversation tip;
- * filter with `userFacingRewindPoints` first when picking among user bubbles.
+ * With `force: true` (what the extension always sends), **every** point is a
+ * valid execute target — including the tip (latest prompt). CLI exclusive
+ * semantics: execute(N) discards N and later; tip execute discards only the
+ * last turn. Filter with `userFacingRewindPoints` first when picking among
+ * user bubbles. Empty input → [].
  */
 export function selectableRewindPoints(points: RewindPoint[]): RewindPoint[] {
-  if (points.length <= 1) return [];
-  // Keep chronological order; UI may reverse for newest-first display.
-  const maxIdx = Math.max(...points.map((p) => p.promptIndex));
-  return points.filter((p) => p.promptIndex < maxIdx);
+  // Chronological order; UI may reverse for newest-first display.
+  return points.slice();
 }
 
 /**
@@ -204,12 +204,10 @@ export function userFacingRewindPoints(points: RewindPoint[]): RewindPoint[] {
 /**
  * Result of mapping a visible user bubble to a wire rewind execute target.
  *
- * - **from bubble** (`undoingTip: false`): execute *this* wire index — CLI
- *   discards this turn and everything after; `prompt_text` is this message.
- * - **undo tip** (`undoingTip: true`): the first user message is alone (it *is*
- *   the tip — CLI forbids execute(tip)). Execute the previous checkpoint (often
- *   the hidden primer) so the turn can still be rolled back. Confirm + composer
- *   use `bubble`, not execute's `prompt_text` (which is the primer).
+ * Execute *this* wire index — CLI discards this turn and everything after;
+ * `prompt_text` is this message. With `force: true`, the tip is a valid target
+ * (discards only the last turn). `undoingTip` is retained for confirm/composer
+ * helpers but is no longer set by the resolver (legacy primer workaround).
  */
 export interface UserBubbleRewind {
   /** Wire target for `_x.ai/rewind/execute`. */
@@ -222,14 +220,10 @@ export interface UserBubbleRewind {
 /**
  * Map a 0-based visible user-bubble index to a rewind target.
  *
- * Non-tip bubbles → execute that wire index (CLI discards it + later turns).
- * The first user message always has a button: when it is also the tip (sole
- * user turn), map to the previous wire point (primer etc.) so the turn can
- * still be undone. Later tips return null (CLI cannot execute the tip; there
- * is no wire target that discards only the tip).
- *
- * `allPoints` is the full list from `/points` (primer included) so tip
- * detection uses the real max `prompt_index`.
+ * Every user-facing bubble (including the tip) maps to its own wire index.
+ * CLI exclusive semantics + `force: true`: execute(N) discards N and later.
+ * `allPoints` is the full list from `/points` (primer included) so
+ * `userFacingRewindPoints` can strip hidden plumbing.
  */
 export function resolveUserBubbleRewind(
   allPoints: RewindPoint[],
@@ -240,16 +234,7 @@ export function resolveUserBubbleRewind(
   const facing = userFacingRewindPoints(allPoints);
   const bubble = facing[userBubbleIndex];
   if (!bubble) return null;
-  const maxIdx = Math.max(...allPoints.map((p) => p.promptIndex));
-  if (bubble.promptIndex < maxIdx) {
-    // Discard this message and everything after (CLI exclusive semantics).
-    return { execute: bubble, bubble, undoingTip: false };
-  }
-  // Tip. Only the first user bubble (sole turn) may undo via the prior checkpoint.
-  if (userBubbleIndex !== 0 || facing.length !== 1) return null;
-  const prev = previousRewindPoint(allPoints, bubble.promptIndex);
-  if (!prev) return null;
-  return { execute: prev, bubble, undoingTip: true };
+  return { execute: bubble, bubble, undoingTip: false };
 }
 
 /**

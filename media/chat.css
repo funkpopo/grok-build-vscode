@@ -512,8 +512,8 @@ body.turn-busy .queued-steer:hover {
 }
 .msg-action-btn.copied { color: var(--vscode-charts-green, #4ec9b0); }
 .msg-action-glyph { display: inline-flex; align-items: center; }
-/* Later tips hide Rewind (nothing after to discard). The first user message
-   always keeps its button — sole turn undoes via the prior checkpoint. */
+/* Every user bubble shows Rewind (including the tip). [hidden] kept as a
+   safety rule if a future path needs to suppress a button. */
 .msg-rewind-btn[hidden] { display: none; }
 .msg-timestamp { font-size: 11px; }
 .msg.thinking {

@@ -53,14 +53,17 @@ Without `force: true`, execute returns `success: false` with empty arrays and
 `error: null` — **no truncation**. The TUI confirmation gate uses this path; the
 extension always confirms in VS Code UI, then passes `force: true`.
 
-Rewinding to the current tip errors:
-`Cannot rewind to prompt #N — current prompt index is N. Valid targets: 0..N`.
+Without `force: true`, **every** target (including non-tip) returns
+`success: false` with empty arrays — that is the TUI confirm gate, not a tip
+restriction. With `force: true`, **tip execute succeeds** (probe-confirmed on
+0.2.111): sole tip, multi-turn tip, and mid-history targets all work.
 
 ### CLI semantics (execute is exclusive)
 
 `execute(target N)` **discards** prompt N and every later turn (remaining
 points are `0..N-1`). `prompt_text` is the discarded target's full text — put
-it back in the composer for re-edit. Tip N is never a valid execute target.
+it back in the composer for re-edit. The tip is a valid target when
+`force: true` (discards only the last turn).
 
 ### Disk gap: `updates.jsonl` is not truncated
 
@@ -76,17 +79,14 @@ in `src/rewind.ts`, applied after dispose and before reload.
 | UI | Flow |
 |---|---|
 | **User bubble → Rewind** (primary) | Hover user message → action row (Copy · Rewind · time) → confirm → execute → file restore → dispose → history truncate → reload → **composer prefill** |
-| `Grok: Rewind Conversation` (command palette only) | QuickPick fallback (newest first, tip excluded) — **not** in the gear menu |
+| `Grok: Rewind Conversation` (command palette only) | QuickPick fallback (newest first, **tip included**) — **not** in the gear menu |
 
 **Bubble index → wire index:** the hidden plan-mode primer is a real rewind point
 (`prompt_index` 0 typically) but never a bubble. `userFacingRewindPoints` /
 `resolveUserBubbleRewind` strip primer / system-reminder / marker-only plan
-verdicts so bubble `N` maps to the Nth user-facing point. Non-tip bubbles
-execute their wire index (discard that turn + later). The **first** user bubble
-always shows Rewind: when it is also the tip (sole turn), execute uses the
-previous checkpoint (`undoingTip`, usually the primer); later tips hide the
-button (CLI cannot execute the tip). Composer text prefers the bubble's full
-`_copyText`; undoing via primer never uses wire `prompt_text` (that's the primer).
+verdicts so bubble `N` maps to the Nth user-facing point. **Every** user bubble
+(including the tip) shows Rewind and executes its own wire index (CLI exclusive
+semantics + `force: true`). Composer text prefers the bubble's full `_copyText`.
 
 Pure helpers: `src/rewind.ts`. ACP: `AcpClient.listRewindPoints` / `executeRewind`.
 

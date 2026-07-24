@@ -144,13 +144,13 @@ describe("selectableRewindPoints / labels", () => {
     { promptIndex: 2, createdAt: "2026-07-23T01:02:00Z", numFileSnapshots: 0, hasFileChanges: false, promptPreview: "gamma" },
   ];
 
-  it("drops the latest tip (no-op target)", () => {
+  it("includes every point including the tip (force:true allows tip execute)", () => {
     const sel = selectableRewindPoints(pts);
-    expect(sel.map((p) => p.promptIndex)).toEqual([0, 1]);
+    expect(sel.map((p) => p.promptIndex)).toEqual([0, 1, 2]);
   });
 
-  it("returns [] when only one point exists", () => {
-    expect(selectableRewindPoints([pts[0]])).toEqual([]);
+  it("returns the sole point when only one exists; [] for empty", () => {
+    expect(selectableRewindPoints([pts[0]]).map((p) => p.promptIndex)).toEqual([0]);
     expect(selectableRewindPoints([])).toEqual([]);
   });
 
@@ -231,27 +231,32 @@ describe("userFacingRewindPoints / resolveUserBubbleRewind", () => {
     expect(resolveUserBubbleRewind(all, 1)?.execute.promptIndex).toBe(2);
   });
 
-  it("returns null for a later tip bubble and out-of-range", () => {
-    expect(resolveUserBubbleRewind(all, 2)).toBeNull(); // tip, not first-only
+  it("maps the tip bubble to its own wire index; null for out-of-range", () => {
+    const tip = resolveUserBubbleRewind(all, 2);
+    expect(tip?.execute.promptIndex).toBe(3);
+    expect(tip?.bubble.promptIndex).toBe(3);
+    expect(tip?.undoingTip).toBe(false);
     expect(resolveUserBubbleRewind(all, 99)).toBeNull();
     expect(resolveUserBubbleRewind(all, -1)).toBeNull();
   });
 
-  it("first sole user message undoes via the previous checkpoint (primer)", () => {
+  it("sole first user message executes its own wire index (not the primer)", () => {
     const sole = [primer, u0];
     const r = resolveUserBubbleRewind(sole, 0);
-    expect(r?.undoingTip).toBe(true);
+    expect(r?.undoingTip).toBe(false);
     expect(r?.bubble.promptIndex).toBe(1);
-    expect(r?.execute.promptIndex).toBe(0); // primer
+    expect(r?.execute.promptIndex).toBe(1);
     expect(previousRewindPoint(sole, 1)?.promptIndex).toBe(0);
   });
 
-  it("works when there is no primer", () => {
+  it("works when there is no primer — including sole tip and multi tip", () => {
     const bare = [u0, u1].map((p, i) => ({ ...p, promptIndex: i }));
     expect(resolveUserBubbleRewind(bare, 0)?.execute.promptIndex).toBe(0);
-    expect(resolveUserBubbleRewind(bare, 1)).toBeNull();
-    // Sole message with no prior checkpoint → can't execute.
-    expect(resolveUserBubbleRewind([{ ...u0, promptIndex: 0 }], 0)).toBeNull();
+    expect(resolveUserBubbleRewind(bare, 1)?.execute.promptIndex).toBe(1);
+    // Sole message at index 0 is a valid tip target with force:true.
+    const sole = resolveUserBubbleRewind([{ ...u0, promptIndex: 0 }], 0);
+    expect(sole?.execute.promptIndex).toBe(0);
+    expect(sole?.undoingTip).toBe(false);
   });
 
   it("confirm copy distinguishes undo-tip vs rewind-from", () => {
