@@ -455,12 +455,12 @@ export function autoCompactStartedNote(update: unknown): string | null {
  * Parse the context line out of `/session-info`'s reply text — grok 0.2.x
  * renders `**Context:** 16017 / 512000 tokens (3%)`. The post-/compact donut
  * refresh prefers the live `auto_compact_completed` notification
- * (`contextUsedFromCompactNotification`); this parser drives the hidden
- * /session-info FALLBACK for CLIs that predate that rail (e.g. the Windows
- * downgrade target). Tolerant of bold markers, casing, and thousands
- * separators; null when the line is missing or the numbers don't parse
- * (callers fall back silently — the post-compact re-prime's signals.json read
- * is the second backup).
+ * (`contextUsedFromCompactNotification`); the structured `_x.ai/session/info`
+ * RPC is the next fallback; this parser drives the hidden /session-info
+ * FALLBACK only for CLIs that predate both (e.g. very old Windows builds).
+ * Tolerant of bold markers, casing, and thousands separators; null when the
+ * line is missing or the numbers don't parse (callers fall back silently —
+ * the post-compact re-prime's signals.json read is the last backup).
  */
 export function parseSessionInfoContext(text: string): { used: number; window: number } | null {
   const m = /context:\*{0,2}\s*([\d][\d,]*)\s*\/\s*([\d][\d,]*)\s*tokens/i.exec(text ?? "");
@@ -470,6 +470,105 @@ export function parseSessionInfoContext(text: string): { used: number; window: n
   const window = num(m[2]);
   if (!Number.isFinite(used) || used <= 0 || !Number.isFinite(window) || window <= 0) return null;
   return { used, window };
+}
+
+/** One row of the CLI's context breakdown (`usageCategories[]` on session/info). */
+export interface ContextUsageCategory {
+  label: string;
+  tokens: number;
+  detail?: string;
+}
+
+/**
+ * Structured context size from `_x.ai/session/info` — a **control-plane** RPC
+ * (not a model turn). Probe-verified on 0.2.112: repeated calls do not inflate
+ * `context.used`, do not append chat history, and do not bill. Prefer this over
+ * a hidden `session/prompt("/session-info")` whenever the method exists.
+ */
+export interface SessionInfoContext {
+  used: number;
+  window: number;
+  categories?: ContextUsageCategory[];
+  systemPromptTokens?: number;
+  toolDefinitionsTokens?: number;
+  messageTokens?: number;
+  freeTokens?: number;
+  autoCompactThresholdPercent?: number;
+}
+
+/** Popover re-fetch TTL for `_x.ai/session/info` — avoid hammering the process. */
+export const SESSION_INFO_TTL_MS = 3000;
+
+function finiteNonNeg(n: unknown): number | undefined {
+  return typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
+function parseUsageCategories(raw: unknown): ContextUsageCategory[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: ContextUsageCategory[] = [];
+  for (const row of raw) {
+    if (!row || typeof row !== "object") continue;
+    const r = row as { label?: unknown; tokens?: unknown; detail?: unknown };
+    if (typeof r.label !== "string" || !r.label.trim()) continue;
+    if (typeof r.tokens !== "number" || !Number.isFinite(r.tokens) || r.tokens < 0) continue;
+    const cat: ContextUsageCategory = { label: r.label.trim(), tokens: r.tokens };
+    if (typeof r.detail === "string" && r.detail.trim()) cat.detail = r.detail.trim();
+    out.push(cat);
+  }
+  return out.length ? out : undefined;
+}
+
+/**
+ * Normalize a `_x.ai/session/info` JSON-RPC result into a donut/popover snapshot.
+ * Accepts either a flat body (`{ sessionId, context }`) or a one-level nest
+ * (`{ result: { sessionId, context } }`) — both shapes have been observed on
+ * the wire depending on how the response is unwrapped. Null when `context.used`
+ * / `context.total` are missing or non-finite. `used === 0` is allowed here
+ * (unlike turn-meta `totalTokens: 0`, which means "no measurement"): the RPC is
+ * an authoritative read of the agent's bookkeeping.
+ */
+export function parseSessionInfoRpcResult(raw: unknown): SessionInfoContext | null {
+  if (!raw || typeof raw !== "object") return null;
+  let body = raw as Record<string, unknown>;
+  // One-level unwrap when the method returns `{ result: { context, … } }`.
+  const nested = body.result;
+  if (
+    nested &&
+    typeof nested === "object" &&
+    (nested as { context?: unknown }).context != null &&
+    body.context == null
+  ) {
+    body = nested as Record<string, unknown>;
+  }
+  const ctx = body.context;
+  if (!ctx || typeof ctx !== "object") return null;
+  const c = ctx as Record<string, unknown>;
+  const used = c.used;
+  const window = c.total;
+  if (typeof used !== "number" || !Number.isFinite(used) || used < 0) return null;
+  if (typeof window !== "number" || !Number.isFinite(window) || window <= 0) return null;
+
+  const out: SessionInfoContext = { used, window };
+  const categories = parseUsageCategories(c.usageCategories);
+  if (categories) out.categories = categories;
+  const sys = finiteNonNeg(c.systemPromptTokens);
+  if (sys != null) out.systemPromptTokens = sys;
+  const tools = finiteNonNeg(c.toolDefinitionsTokens);
+  if (tools != null) out.toolDefinitionsTokens = tools;
+  const msgs = finiteNonNeg(c.messageTokens);
+  if (msgs != null) out.messageTokens = msgs;
+  const free = finiteNonNeg(c.freeTokens);
+  if (free != null) out.freeTokens = free;
+  const thr = c.autoCompactThresholdPercent;
+  if (typeof thr === "number" && Number.isFinite(thr) && thr > 0) {
+    out.autoCompactThresholdPercent = thr;
+  }
+  return out;
+}
+
+/** Whether a cached session/info fetch is still fresh for a popover re-open. */
+export function sessionInfoCacheFresh(fetchedAt: number, now: number, ttlMs = SESSION_INFO_TTL_MS): boolean {
+  return fetchedAt > 0 && now - fetchedAt < ttlMs;
 }
 
 export function makePermissionResponse(id: number | string, optionId: string) {

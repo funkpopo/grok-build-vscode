@@ -11,7 +11,7 @@ import { resolveVoiceKey, extractGrokAuthKey, parseVoiceCommand, DEFAULT_SEND_PH
 import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voice-recorder";
 import { VoiceStreamer } from "./voice-streamer";
 import type { PromptResultMeta } from "./acp-dispatch";
-import { MediaRef, addUsage, autoCompactStartedNote, contextUsedFromCompactNotification, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, parseSessionInfoContext, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement } from "./acp-dispatch";
+import { MediaRef, addUsage, autoCompactStartedNote, contextUsedFromCompactNotification, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, parseSessionInfoContext, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sessionInfoCacheFresh, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement, type SessionInfoContext } from "./acp-dispatch";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
 import { GROK_VIEW_ID, moveViewContainerFor } from "./view-move";
 import {
@@ -2530,6 +2530,9 @@ See design doc for the full state machine diagram.`;
       log: (msg) => this.output.appendLine(msg),
     });
     session.client = client;
+    // Fresh process — re-probe session/info capability; prior latch may be stale.
+    session.sessionInfoUnsupported = false;
+    session.lastSessionInfoAt = 0;
 
     // fs handlers (mandatory — the agent calls these to read/write files)
     client.fsRead = async (p: string) => {
@@ -2705,13 +2708,12 @@ See design doc for the full state machine diagram.`;
       if (gen !== session.gen) return;
       this.emit(session, { type: "promptComplete", meta: gateZeroTokenMeta(meta) });
       this.accumulateUsage(session, meta);
-      // A zero report (stripped above) is /compact or /session-info; neither
-      // warrants a donut update here. /session-info leaves the context
-      // untouched, and after /compact the fresh count comes from the live
-      // auto_compact_completed notification (primary; xaiNotification listener)
-      // or the hidden /session-info fallback — reading signals.json now would
-      // fetch the stale pre-compact count (the CLI recomputes it only at the
-      // next inference turn's end; research/signals-refresh-probe.cjs).
+      // A zero report (stripped above) is /compact or a slash probe; neither
+      // warrants a donut update here. After /compact the fresh count comes from
+      // the live auto_compact_completed notification (primary), else
+      // `_x.ai/session/info`, else the hidden /session-info prompt — reading
+      // signals.json now would fetch the stale pre-compact count (the CLI
+      // recomputes it only at the next inference turn's end).
     });
     client.on("xaiNotification", (u) => {
       if (gen !== session.gen) return;
@@ -2727,12 +2729,12 @@ See design doc for the full state machine diagram.`;
       if (compactUsed !== null) {
         this.emit(session, { type: "contextUsage", used: compactUsed });
         // Mark the live rail as authoritative for the in-flight manual /compact
-        // so the pre-rail /session-info fallback + signals.json backup stand down.
+        // so session/info + legacy /session-info + signals.json backups stand down.
         session.sawCompactNotification = true;
       }
       // Compaction FAILED (either path — compaction.rs emits it on both). The
       // context is unchanged, so the donut needs no refresh; mark handled so the
-      // /session-info fallback doesn't run, flag it so a manual /compact paints
+      // post-compact fallbacks don't run, flag it so a manual /compact paints
       // the failure instead of a false "Compacted.", and surface a note.
       if (kind === "auto_compact_failed") {
         session.sawCompactNotification = true;
@@ -2946,11 +2948,12 @@ See design doc for the full state machine diagram.`;
         const targetMode = decision.cliMode === "plan" ? "plan" : ACT_MODE_ID;
         try { await client.setMode(targetMode); } catch { /* best-effort */ }
 
-        // Seed the context donut from grok's persisted signals.json — no turn
-        // has run yet, so without this a restored session shows 0 until the
-        // first prompt completes. Emitted after loadSession so it lands after
-        // the donut-resetting `session` event in the replay buffer.
+        // Seed the context donut: disk first (instant), then upgrade from the
+        // control-plane `_x.ai/session/info` RPC when the CLI supports it
+        // (structured breakdown, no context-window cost). Emitted after
+        // loadSession so it lands after the donut-resetting `session` event.
         this.emitContextUsage(session);
+        void this.refreshContextFromSessionInfo(session, gen, { force: true });
         // Same reason, for the billing breakdown (#53) — but from OUR store, as
         // grok persists no per-turn usage anywhere.
         this.restoreUsage(session);
@@ -3141,6 +3144,14 @@ See design doc for the full state machine diagram.`;
       case "workflowControl":
         await this.controlWorkflow(msg.action, msg.displayName);
         break;
+      case "refreshContextDetails": {
+        // Donut popover open — re-query `_x.ai/session/info` (TTL-gated). Not a
+        // model turn; safe to fire while idle or mid-turn.
+        const s = this.focused;
+        const g = s.gen;
+        void this.refreshContextFromSessionInfo(s, g);
+        break;
+      }
       case "clearQueuedSends": {
         // Posted by the webview's Stop flow BEFORE the cancel — a halt must not
         // auto-fire queued sends into the cancelled turn's wake.
@@ -4860,9 +4871,9 @@ See design doc for the full state machine diagram.`;
         // Donut refresh, dynamic by CLI capability: the fresh post-compact size
         // lands DURING this turn on the live `_x.ai/session_notification` rail
         // (auto_compact_completed.tokens_after → the xaiNotification listener,
-        // which sets sawCompactNotification). If that rail didn't fire — a CLI
-        // that predates it, e.g. the Windows downgrade target 0.2.72 — fall back
-        // to the hidden /session-info scrape (exact, CLI-local, before agentEnd).
+        // which sets sawCompactNotification). If that rail didn't fire, try
+        // `_x.ai/session/info` (control-plane, no window cost), then the legacy
+        // hidden /session-info prompt scrape for very old CLIs.
         if (!session.sawCompactNotification) {
           await this.refreshContextAfterCompact(client, session, gen);
           if (gen !== session.gen) return;
@@ -5465,38 +5476,88 @@ See design doc for the full state machine diagram.`;
   }
 
   /** Push the context size from grok's on-disk signals.json to the webview —
-   *  the source that has a real count when the ACP turn meta can't: a cold
-   *  restore (no turn has run), the hidden post-/compact re-prime (its meta is
-   *  suppressed), and zero-reporting turns like /session-info (stripped by
-   *  gateZeroTokenMeta). Best-effort: no readable count, no message (the
-   *  donut keeps whatever it has). */
+   *  the sync seed when no live turn meta is available (cold restore, backup
+   *  after re-prime). Prefer `refreshContextFromSessionInfo` when a live client
+   *  can answer — that path is structured and does not cost context window.
+   *  Best-effort: no readable count, no message (the donut keeps whatever it has). */
   private emitContextUsage(session: Session): void {
     const id = session.activeSessionId;
     if (!id) return;
-    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? process.cwd();
-    const usage = readContextUsage({ fs: defaultFs, grokHome: resolveGrokHome(process.env), cwd, id });
+    const usage = readContextUsage({
+      fs: defaultFs,
+      grokHome: resolveGrokHome(process.env),
+      cwd: this.sessionCwd(session),
+      id,
+    });
     if (usage) this.emit(session, { type: "contextUsage", used: usage.used, window: usage.window });
   }
 
-  /** emitContextUsage now + once more after the CLI's turn-end file flush has
-   *  certainly landed (the write races the ACP response by a beat). */
+  /** Emit a structured contextUsage host message from a session/info snapshot. */
+  private emitSessionInfoContext(session: Session, info: SessionInfoContext): void {
+    session.lastSessionInfoAt = Date.now();
+    this.emit(session, {
+      type: "contextUsage",
+      used: info.used,
+      window: info.window,
+      categories: info.categories,
+      systemPromptTokens: info.systemPromptTokens,
+      toolDefinitionsTokens: info.toolDefinitionsTokens,
+      messageTokens: info.messageTokens,
+      freeTokens: info.freeTokens,
+      autoCompactThresholdPercent: info.autoCompactThresholdPercent,
+    });
+  }
+
+  /**
+   * Refresh the donut from `_x.ai/session/info` (control-plane RPC — does not
+   * inflate the context window). Returns true when the donut was updated.
+   * Latches `sessionInfoUnsupported` on -32601 so later calls skip the RPC.
+   * TTL-gated unless `force` (compact / cold restore / explicit popover miss).
+   */
+  private async refreshContextFromSessionInfo(
+    session: Session,
+    gen: number,
+    opts: { force?: boolean } = {},
+  ): Promise<boolean> {
+    if (gen !== session.gen) return false;
+    if (session.sessionInfoUnsupported) return false;
+    const client = session.client;
+    if (!client?.sessionId) return false;
+    if (!opts.force && sessionInfoCacheFresh(session.lastSessionInfoAt, Date.now())) {
+      return false;
+    }
+    try {
+      const info = await client.getSessionInfo();
+      if (gen !== session.gen) return false;
+      if (info === "unsupported") {
+        session.sessionInfoUnsupported = true;
+        return false;
+      }
+      this.emitSessionInfoContext(session, info);
+      return true;
+    } catch (e) {
+      this.output.appendLine(`[context] session/info failed: ${(e as Error).message}`);
+      return false;
+    }
+  }
+
+  /** emitContextUsage (disk) now + once more after the CLI's turn-end file flush
+   *  has certainly landed; also try session/info once the flush window opens. */
   private emitContextUsageSoon(session: Session, gen: number): void {
     this.emitContextUsage(session);
     setTimeout(() => {
-      if (gen === session.gen) this.emitContextUsage(session);
+      if (gen !== session.gen) return;
+      this.emitContextUsage(session);
+      void this.refreshContextFromSessionInfo(session, gen, { force: true });
     }, 1500);
   }
 
-  /** Pre-rail fallback for the post-/compact donut: fetch the fresh context size
-   *  via a hidden /session-info turn. Runs ONLY when the live
-   *  auto_compact_completed notification didn't fire (a CLI older than that rail,
-   *  e.g. the Windows downgrade target). The turn is CLI-local (~25ms, no model
-   *  call) and is NOT persisted to chat history, so nothing shows live or on
-   *  restore; its reply text is the only place the fresh count exists this early
-   *  on such builds (research/signals-refresh-probe.cjs). Runs before the compact
-   *  turn's agentEnd clears busy, so no user send can interleave. Parse failure is
-   *  silent — the post-compact re-prime's signals.json read is the second backup. */
+  /** Post-/compact donut when the live auto_compact_completed rail didn't fire.
+   *  Order: `_x.ai/session/info` (preferred) → hidden `/session-info` prompt
+   *  (legacy only). Runs before agentEnd clears busy so no user send interleaves. */
   private async refreshContextAfterCompact(client: AcpClient, session: Session, gen: number): Promise<void> {
+    if (await this.refreshContextFromSessionInfo(session, gen, { force: true })) return;
+    if (gen !== session.gen) return;
     // Drift guard: if a future CLI stops advertising /session-info, sending it
     // anyway would become a REAL inference turn (and a restore-visible bubble).
     // Skip entirely — a donut that lags until the next turn beats that.
@@ -5506,13 +5567,9 @@ See design doc for the full state machine diagram.`;
     try {
       await client.prompt("/session-info");
       if (gen !== session.gen) return;
-      // parseSessionInfoContext is null-safe and never throws: a reply-format
-      // change means no donut update (it lags until the next turn), never an
-      // error surfaced to the user.
       const parsed = parseSessionInfoContext(session.captureAgentText ?? "");
       if (parsed) this.emit(session, { type: "contextUsage", used: parsed.used, window: parsed.window });
     } catch (e) {
-      // Even a failed hidden turn stays silent — log-only, no error bubble.
       this.output.appendLine(`[compact] hidden /session-info failed: ${(e as Error).message}`);
     } finally {
       if (gen === session.gen) session.suppressContent = false;

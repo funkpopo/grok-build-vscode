@@ -104,6 +104,14 @@
     steerSupported: true,
     lastTurnUsage: null, // last prompt's billing split (#53), for the donut popover
     sessionUsage: null, // session-cumulative billing — summed by the host, not grok
+    // Optional structured breakdown from `_x.ai/session/info` (control-plane).
+    // Absent until the host has fetched it (cold restore / popover open).
+    contextCategories: null,
+    contextSystemPromptTokens: null,
+    contextToolDefinitionsTokens: null,
+    contextMessageTokens: null,
+    contextFreeTokens: null,
+    contextAutoCompactPct: null,
     activeAgentEl: null,
     activeAgentRaw: "",
     activeUserEl: null,
@@ -1198,6 +1206,14 @@
 
   function openContextPopover() {
     closePopovers();
+    // Ask the host for a fresh structured snapshot via control-plane
+    // `_x.ai/session/info` (TTL-gated, does not cost context window). The
+    // reply re-renders this popover if it is still open.
+    vscode.postMessage({ type: "refreshContextDetails" });
+    renderContextPopover();
+  }
+
+  function renderContextPopover() {
     contextPopover.innerHTML = "";
     // A `↳ ` label marks a sub-row (a component of the line above it) — indented
     // via CSS rather than padding the string, so the value column stays aligned.
@@ -1237,6 +1253,38 @@
       };
     }
     contextPopover.appendChild(act);
+
+    // Structured breakdown from session/info when available — shows where the
+    // window went (system / tools / messages / skills) without guessing.
+    const hasBreakdown =
+      state.contextSystemPromptTokens != null ||
+      state.contextToolDefinitionsTokens != null ||
+      state.contextMessageTokens != null ||
+      (state.contextCategories && state.contextCategories.length);
+    if (hasBreakdown) {
+      section("In this window");
+      if (state.contextSystemPromptTokens != null) {
+        info("System prompt", tok(state.contextSystemPromptTokens));
+      }
+      if (state.contextToolDefinitionsTokens != null) {
+        info("Tool definitions", tok(state.contextToolDefinitionsTokens));
+      }
+      if (state.contextMessageTokens != null) {
+        info("Messages", tok(state.contextMessageTokens));
+      }
+      if (state.contextCategories) {
+        for (const cat of state.contextCategories) {
+          const label = cat.detail ? `${cat.label} (${cat.detail})` : cat.label;
+          info(label, tok(cat.tokens));
+        }
+      }
+      if (state.contextFreeTokens != null) {
+        info("Free", tok(state.contextFreeTokens));
+      }
+      if (state.contextAutoCompactPct != null) {
+        info("Auto-compact at", `${state.contextAutoCompactPct}%`);
+      }
+    }
 
     // Billing rows only when the CLI actually reported usage — an older build or
     // a session with no completed turn shows the context row alone rather than a
@@ -2334,6 +2382,19 @@
     // snapshot, so its queued messages reappear when you swap back.
     state.sendQueue = [];
     state.queuedWrapEl = null;
+    // Context donut + popover breakdown re-seed from the next session's
+    // contextUsage / modelChanged; clear so a swap doesn't flash the prior
+    // session's numbers or categories.
+    state.usedTokens = 0;
+    state.lastTurnUsage = null;
+    state.sessionUsage = null;
+    state.contextCategories = null;
+    state.contextSystemPromptTokens = null;
+    state.contextToolDefinitionsTokens = null;
+    state.contextMessageTokens = null;
+    state.contextFreeTokens = null;
+    state.contextAutoCompactPct = null;
+    updateDonut(0);
     updateSendButton();
   }
 
@@ -6304,13 +6365,20 @@
         if (msg.meta?.totalTokens != null) updateDonut(msg.meta.totalTokens);
         break;
       case "contextUsage":
-        // Read from grok's on-disk signals.json by the host — a real count for
-        // the cases the turn meta can't cover: cold restore (donut would sit
-        // at 0 until the first turn) and zero-reporting turns where signals
-        // holds a fresher count than the last meta (e.g. /session-info right
-        // after a /compact).
+        // Host sources (priority): turn meta / auto_compact_completed →
+        // `_x.ai/session/info` (control-plane) → signals.json → legacy hidden
+        // /session-info prompt. Optional breakdown fields only come from
+        // session/info.
         if (msg.window) state.contextWindow = msg.window;
+        if (msg.categories) state.contextCategories = msg.categories;
+        if (msg.systemPromptTokens != null) state.contextSystemPromptTokens = msg.systemPromptTokens;
+        if (msg.toolDefinitionsTokens != null) state.contextToolDefinitionsTokens = msg.toolDefinitionsTokens;
+        if (msg.messageTokens != null) state.contextMessageTokens = msg.messageTokens;
+        if (msg.freeTokens != null) state.contextFreeTokens = msg.freeTokens;
+        if (msg.autoCompactThresholdPercent != null) state.contextAutoCompactPct = msg.autoCompactThresholdPercent;
         updateDonut(msg.used);
+        // Live-refresh the open popover when a structured snapshot arrives.
+        if (!contextPopover.hidden) renderContextPopover();
         break;
       case "expandCommandOutputs":
         // Live toggle (grok.expandCommandOutputs): applies to existing rows

@@ -73,6 +73,8 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   uiConfirmAnswer: "host-local",
   // Workflow pause/resume/stop is a slash turn (same class as queueSend/steer).
   workflowControl: "propose",
+  // Donut popover re-fetch — read-only meter, no turn / no mutation.
+  refreshContextDetails: "view",
   pasteImage: "propose",
   removeChip: "propose",
   toggleChip: "propose",

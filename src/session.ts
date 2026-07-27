@@ -100,10 +100,24 @@ export class Session {
   /**
    * When set (to ""), the sidebar's messageChunk handler accumulates the
    * agent's streamed text here instead of only forwarding it — used by the
-   * pre-rail post-/compact /session-info fallback, whose reply text carries the
-   * fresh context count. undefined = no capture.
+   * legacy pre-rail post-/compact /session-info **prompt** fallback (only when
+   * `_x.ai/session/info` is missing), whose reply text carries the fresh
+   * context count. undefined = no capture.
    */
   captureAgentText?: string;
+
+  /**
+   * Wall-clock of the last successful `_x.ai/session/info` fetch for this
+   * session. Gates the donut-popover re-fetch TTL so opening the popover twice
+   * in a row doesn't hammer the process. 0 = never fetched.
+   */
+  lastSessionInfoAt = 0;
+
+  /**
+   * Latched once `_x.ai/session/info` answers -32601 on this process — skip
+   * further RPC attempts and go straight to disk / prompt fallbacks.
+   */
+  sessionInfoUnsupported = false;
 
   /**
    * Plan-reject specific suppression: drop streaming output (the false-approval

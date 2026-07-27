@@ -38,6 +38,7 @@
     "queueSend", "dequeueSend", "clearQueuedSends", "steerSend", "forkSession", "setSteerByDefault",
     "setSoundNotifications",
     "newWorktreeSession", "applyWorktree", "removeWorktree", "rewindSession", "editLastMessage", "uiConfirmAnswer", "workflowControl",
+    "refreshContextDetails",
     "remoteSignIn", "remoteSignOut", "openRemotePortal",
   ];
   const HOST_MESSAGE_TYPE_SET = new Set(HOST_MESSAGE_TYPES);

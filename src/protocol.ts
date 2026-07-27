@@ -106,10 +106,21 @@ export type HostMsg =
   | { type: "autoCompactNotice"; text: string }
   | { type: "planBlocked"; kind: string; target: string }
   | { type: "promptComplete"; meta: PromptResultMeta }
-  // Context size read from grok's on-disk signals.json — the source that has a
-  // real count when the turn meta can't: a cold restore (no turn yet) and a
-  // /compact turn (its meta reports 0, stripped by gateZeroTokenMeta).
-  | { type: "contextUsage"; used: number; window?: number }
+  // Context size for the donut/popover. Sources (priority): turn meta /
+  // auto_compact_completed → `_x.ai/session/info` (control-plane, no window
+  // cost) → signals.json → legacy hidden `/session-info` prompt. Optional
+  // breakdown fields come only from session/info.
+  | {
+      type: "contextUsage";
+      used: number;
+      window?: number;
+      categories?: { label: string; tokens: number; detail?: string }[];
+      systemPromptTokens?: number;
+      toolDefinitionsTokens?: number;
+      messageTokens?: number;
+      freeTokens?: number;
+      autoCompactThresholdPercent?: number;
+    }
   | { type: "agentReset" }
   | { type: "agentError"; text: string }
   | { type: "agentEnd"; meta?: PromptResultMeta }
@@ -271,6 +282,9 @@ export type WebviewMsg =
   | { type: "uiConfirmAnswer"; id: string; ok: boolean }
   // Workflow card controls (P2-10): pause / resume / stop by display name.
   | { type: "workflowControl"; action: "pause" | "resume" | "stop"; displayName: string }
+  // Donut popover open: re-fetch structured context via `_x.ai/session/info`
+  // (TTL-gated on the host). Read-only meter refresh — not a model turn.
+  | { type: "refreshContextDetails" }
   // Relay account (gear "AFK Pilot" section, local webview only): start the
   // device-link flow / drop the device token / open the relay web portal.
   | { type: "remoteSignIn" }
@@ -319,6 +333,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   steerSend: true, forkSession: true,
   newWorktreeSession: true, applyWorktree: true, removeWorktree: true,
   rewindSession: true, editLastMessage: true, uiConfirmAnswer: true, workflowControl: true,
+  refreshContextDetails: true,
   remoteSignIn: true, remoteSignOut: true, openRemotePortal: true,
 };
 

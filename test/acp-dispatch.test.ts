@@ -33,6 +33,9 @@ import {
   makeRequest,
   parseAcpLine,
   parseSessionInfoContext,
+  parseSessionInfoRpcResult,
+  sessionInfoCacheFresh,
+  SESSION_INFO_TTL_MS,
   permissionOutcomeFor,
   resolveModelId,
   routeSessionUpdate,
@@ -297,6 +300,90 @@ describe("parseSessionInfoContext (hidden post-/compact /session-info)", () => {
   it("rejects non-positive counts (0 is never a real measurement, #39)", () => {
     expect(parseSessionInfoContext("Context: 0 / 512000 tokens")).toBeNull();
     expect(parseSessionInfoContext("Context: 100 / 0 tokens")).toBeNull();
+  });
+});
+
+describe("parseSessionInfoRpcResult (_x.ai/session/info control-plane)", () => {
+  // Verbatim shape from grok 0.2.112 (nested under JSON-RPC result).
+  const REAL = {
+    sessionId: "019fa15c-f7dd-7ef1-8876-0534ed0f6888",
+    cwd: "D:\\Projects\\grok-build-vscode",
+    agentName: "grok-build-plan",
+    model: "grok-4.5",
+    turns: 1,
+    context: {
+      used: 1412,
+      total: 500000,
+      systemPromptTokens: 1039,
+      toolDefinitionsCount: 25,
+      toolDefinitionsTokens: 8059,
+      messageCount: 2,
+      messageTokens: 373,
+      freeTokens: 498588,
+      usagePct: 0,
+      autoCompactThresholdPercent: 80,
+      usageCategories: [{ label: "Skills", tokens: 364, detail: "4 skills" }],
+    },
+  };
+
+  it("parses the real 0.2.112 flat body", () => {
+    const p = parseSessionInfoRpcResult(REAL);
+    expect(p).toEqual({
+      used: 1412,
+      window: 500000,
+      categories: [{ label: "Skills", tokens: 364, detail: "4 skills" }],
+      systemPromptTokens: 1039,
+      toolDefinitionsTokens: 8059,
+      messageTokens: 373,
+      freeTokens: 498588,
+      autoCompactThresholdPercent: 80,
+    });
+  });
+
+  it("unwraps a one-level { result: { context } } nest", () => {
+    const p = parseSessionInfoRpcResult({ result: REAL });
+    expect(p?.used).toBe(1412);
+    expect(p?.window).toBe(500000);
+    expect(p?.categories?.[0]?.label).toBe("Skills");
+  });
+
+  it("allows used === 0 (authoritative empty bookkeeping, unlike turn-meta 0)", () => {
+    expect(
+      parseSessionInfoRpcResult({ context: { used: 0, total: 200000 } }),
+    ).toEqual({ used: 0, window: 200000 });
+  });
+
+  it("returns null on missing / non-finite context", () => {
+    expect(parseSessionInfoRpcResult(null)).toBeNull();
+    expect(parseSessionInfoRpcResult({})).toBeNull();
+    expect(parseSessionInfoRpcResult({ context: { used: 10 } })).toBeNull();
+    expect(parseSessionInfoRpcResult({ context: { used: -1, total: 100 } })).toBeNull();
+    expect(parseSessionInfoRpcResult({ context: { used: 10, total: 0 } })).toBeNull();
+  });
+
+  it("drops malformed category rows", () => {
+    const p = parseSessionInfoRpcResult({
+      context: {
+        used: 100,
+        total: 1000,
+        usageCategories: [
+          { label: "ok", tokens: 1 },
+          { label: "", tokens: 2 },
+          { tokens: 3 },
+          { label: "neg", tokens: -1 },
+          null,
+        ],
+      },
+    });
+    expect(p?.categories).toEqual([{ label: "ok", tokens: 1 }]);
+  });
+});
+
+describe("sessionInfoCacheFresh (popover TTL)", () => {
+  it("is fresh inside the TTL and stale outside", () => {
+    expect(sessionInfoCacheFresh(1000, 1000 + SESSION_INFO_TTL_MS - 1)).toBe(true);
+    expect(sessionInfoCacheFresh(1000, 1000 + SESSION_INFO_TTL_MS)).toBe(false);
+    expect(sessionInfoCacheFresh(0, 5000)).toBe(false);
   });
 });
 
