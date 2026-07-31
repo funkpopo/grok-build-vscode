@@ -236,8 +236,33 @@ async function runScenario(promptId, text, params) {
       return;
     }
 
-    // Default: just emit one chunk and end.
-    notify("session/update", { sessionId: SESSION_ID, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "ok" } } });
+    // Default: stream one chunk (with live update._meta.totalTokens, matching
+    // real grok 0.2.117) then end. Two equal stamps exercise AcpClient's dedupe;
+    // a third with a higher count must fire a second contextTokens event.
+    notify("session/update", {
+      sessionId: SESSION_ID,
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "ok" },
+        _meta: { totalTokens: 42, updateType: "AgentMessageChunk", chunkId: 1 },
+      },
+    });
+    notify("session/update", {
+      sessionId: SESSION_ID,
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "!" },
+        _meta: { totalTokens: 42, updateType: "AgentMessageChunk", chunkId: 2 },
+      },
+    });
+    notify("session/update", {
+      sessionId: SESSION_ID,
+      update: {
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: "" },
+        _meta: { totalTokens: 99, updateType: "AgentMessageChunk", chunkId: 3 },
+      },
+    });
     respondOk(promptId, { stopReason: "end_turn", _meta: { totalTokens: 10 } });
   } catch (e) {
     process.stderr.write(`SCENARIO_ERROR: ${e.message}\n`);

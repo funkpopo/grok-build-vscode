@@ -4,6 +4,7 @@ import {
   sumUsage,
   collectToolImages,
   contextUsedFromCompactNotification,
+  contextUsedFromUpdateMeta,
   autoCompactStartedNote,
   isSubagentLifecycleUpdate,
   extractGeneratedMediaPaths,
@@ -269,6 +270,69 @@ describe("gateZeroTokenMeta (#39)", () => {
   it("passes absent totalTokens through unchanged", () => {
     const meta = { inputTokens: 80 };
     expect(gateZeroTokenMeta(meta)).toBe(meta);
+  });
+});
+
+describe("contextUsedFromUpdateMeta (live session/update envelope tokens)", () => {
+  // Wire shape from grok 0.2.117 — totalTokens lives on params.update._meta,
+  // which parseAcpLine already hands through as the whole update object.
+  const THOUGHT = {
+    sessionUpdate: "agent_thought_chunk",
+    content: { type: "text", text: " The" },
+    _meta: {
+      totalTokens: 28561,
+      eventId: "019fb5d4-…-4",
+      promptId: "e2baf3bb-…",
+      updateType: "AgentThoughtChunk",
+      chunkId: 2,
+    },
+  };
+  const TOOL = {
+    sessionUpdate: "tool_call",
+    toolCallId: "call-1",
+    title: "run_terminal_command",
+    _meta: { totalTokens: 37630, updateType: "ToolCall" },
+  };
+
+  it("reads totalTokens from a real thought-chunk update _meta", () => {
+    expect(contextUsedFromUpdateMeta(THOUGHT)).toBe(28561);
+  });
+
+  it("reads totalTokens from a tool_call update _meta", () => {
+    expect(contextUsedFromUpdateMeta(TOOL)).toBe(37630);
+  });
+
+  it("returns null when _meta is missing or has no usable totalTokens", () => {
+    expect(contextUsedFromUpdateMeta({ sessionUpdate: "agent_message_chunk", content: { text: "hi" } })).toBeNull();
+    expect(contextUsedFromUpdateMeta({ sessionUpdate: "x", _meta: {} })).toBeNull();
+    expect(contextUsedFromUpdateMeta({ sessionUpdate: "x", _meta: { totalTokens: 0 } })).toBeNull();
+    expect(contextUsedFromUpdateMeta({ sessionUpdate: "x", _meta: { totalTokens: -1 } })).toBeNull();
+    expect(contextUsedFromUpdateMeta({ sessionUpdate: "x", _meta: { totalTokens: "100" } })).toBeNull();
+    expect(contextUsedFromUpdateMeta({ sessionUpdate: "x", _meta: { totalTokens: NaN } })).toBeNull();
+  });
+
+  it("returns null for non-objects", () => {
+    expect(contextUsedFromUpdateMeta(undefined)).toBeNull();
+    expect(contextUsedFromUpdateMeta(null)).toBeNull();
+    expect(contextUsedFromUpdateMeta("nope")).toBeNull();
+  });
+
+  it("survives parseAcpLine — the full update (incl. _meta) is what route/handle see", () => {
+    const line = JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "s1",
+        update: THOUGHT,
+        // Outer params._meta is event bookkeeping only — no totalTokens here.
+        _meta: { eventId: "outer", agentTimestampMs: 1 },
+      },
+    });
+    const r = parseAcpLine(line);
+    expect(r?.kind).toBe("session-update");
+    if (r?.kind === "session-update") {
+      expect(contextUsedFromUpdateMeta(r.update)).toBe(28561);
+    }
   });
 });
 

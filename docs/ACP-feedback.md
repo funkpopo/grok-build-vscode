@@ -27,6 +27,7 @@ was made against; a section without a date here predates this log and is covered
 
 | Date | grok CLI | What changed |
 |---|---|---|
+| **2026-07-31** | **0.2.117** | **§2.3 — client now consumes live `session/update` `_meta.totalTokens`.** Streaming thought/message/tool updates already stamped real context size on `params.update._meta`; we only read turn-end result meta (often 0 on slash turns) and the compact rail. Extension now drives the donut mid-turn from that field (`contextUsedFromUpdateMeta`), still strips result zeros, and prefers control-plane `_x.ai/session/info` over a hidden `/session-info` prompt when the compact rail is missing. The upstream ask (truthful result meta / `usage_update`) still stands — live update meta is a client workaround, not a substitute. |
 | **2026-07-26** | **0.2.111** | **§2.15 (new) — `_x.ai/rewind/*` semantics are undocumented and one of them is wrong on the wire.** `execute` **DISCARDS its target** prompt along with everything after it (measured: a 4-prompt session rewound to `#1` drops to 1 point; rewound to the tip `#3` drops to 3) — the opposite of what "rewind **to** N" reads like, and getting it backwards silently eats an extra turn *and* that turn's file changes. The **tip is a legal target**, contradicting an earlier "current prompt index is N" error we saw. `prompt_text` returns the *discarded* prompt (correct and useful — it's what a client puts back in the input box). **Bug:** `reverted_files` lists files that were **created** in the rewound turn even though they are left on disk — restore-previous-content has nothing to write back for a new file, so the array over-reports. Probes: `research/rewind-semantics-probe.cjs`, `research/rewind-newfile-probe.cjs`. |
 | **2026-07-24** | **0.2.103** | **Re-verification on the current shipped build, prompted by [#64](https://github.com/phuryn/grok-build-vscode/issues/64).** §2.1's terminal hole is **still open** — re-probed: during a plan turn the model issued `run_terminal_command` and the CLI passed `terminal/create` straight through to the client (edit tool correctly blocked, so only `plan.md` was writable). §2.13's quota gap **still holds and now has a second, independent user asking for it**: the account/plan quota the TUI's `/usage` shows is **not reachable over ACP** — no `usage_update`, no `grok usage` subcommand, and `/usage` is TUI-only (like `/context`, `ok_end_turn(0, None)` — streams nothing over `grok agent stdio`). #64 wants exactly §2.13 item 3 (queryable quota in the GUI). Also confirmed advertised effort is model-specific: grok-4.5's `models[]._meta` advertises only `[high (default), medium, low]` (§2.7). |
 | **2026-07-18** | **0.2.101** | **§2.13 (new) — rate-limit errors carry no reset time and no quota telemetry.** A weekly/usage limit surfaces as `-32003` with deliberately vague copy ("try again later"); no reset date exists anywhere on the wire, and there is no used/remaining signal a client could use to warn *before* the wall. User-reported ([#57](https://github.com/phuryn/grok-build-vscode/issues/57)) — the billing-flavored wording also misread as an auth failure in our client (fixed in extension v1.7.2 by classifying `-32003` first). |
@@ -179,10 +180,14 @@ will probe it.
 - The persisted `signals.json` (`contextTokensUsed`) is recomputed only when the **next
   inference turn ends** — never at the compact turn's own end (probe:
   `research/signals-refresh-probe.cjs`). Right after "compact finished" the true size exists
-  nowhere a client can read…
-- …except in `/session-info`'s **reply prose**. Our fix is a hidden CLI-local `/session-info`
-  turn whose text we scrape with a regex (`**Context:** N / M tokens`). That is as fragile as
-  it sounds.
+  nowhere a client can read on the *result* channel…
+- …except (a) `auto_compact_completed.tokens_after` on the live notification rail, (b)
+  control-plane `_x.ai/session/info`, and (c) `/session-info`'s **reply prose** (legacy scrape).
+- **Client workaround (2026-07-31, grok 0.2.117):** streaming `session/update` payloads already
+  carry a truthful `params.update._meta.totalTokens` on thought/message/tool chunks — the same
+  context size the TUI would show mid-turn. We now read it (`contextUsedFromUpdateMeta`) so the
+  donut moves during a reply without waiting for turn-end meta. That does **not** fix the
+  compact-turn result zero or the missing `usage_update`.
 - The ACP `usage_update` notification (the RFD's standard channel for exactly this) is never
   emitted.
 

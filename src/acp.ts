@@ -3,6 +3,7 @@ import { createInterface, Interface } from "node:readline";
 import { EventEmitter } from "node:events";
 import {
   collectToolImages,
+  contextUsedFromUpdateMeta,
   extractGeneratedMediaPaths,
   isMediaGenToolCall,
   extractPromptMeta,
@@ -171,6 +172,13 @@ export class AcpClient extends EventEmitter {
   availableCommands: SlashCommand[] = [];
   lastMeta?: PromptResultMeta;
   /**
+   * Last live context size emitted from a streaming `session/update` `_meta`
+   * (`contextTokens` event). Dedupes the per-chunk re-stamps so the host only
+   * hears real changes (e.g. after a tool result grows context). Reset on
+   * new/load so the first post-session update always fires.
+   */
+  private lastEmittedContextTokens: number | undefined;
+  /**
    * The session's effective reasoning effort. Seeded from the spawn flag
    * (`opts.effort`), updated by a live `setReasoningEffort`, and CARRIED through a
    * compatible `setModel` (a model switch that omits it lets the server resolve
@@ -277,6 +285,7 @@ export class AcpClient extends EventEmitter {
       mcpServers: [],
     });
     this.sessionId = res.sessionId;
+    this.lastEmittedContextTokens = undefined;
     this.availableModels = (res.models?.availableModels ?? []).map((m: any) => ({
       modelId: m.modelId,
       name: m.name,
@@ -315,6 +324,7 @@ export class AcpClient extends EventEmitter {
       mcpServers: [],
     });
     this.sessionId = sessionId;
+    this.lastEmittedContextTokens = undefined;
     if (res?.models?.availableModels) {
       this.availableModels = res.models.availableModels.map((m: any) => ({
         modelId: m.modelId,
@@ -815,6 +825,15 @@ export class AcpClient extends EventEmitter {
   }
 
   private handleSessionUpdate(u: any): void {
+    // Live context size rides every streaming update's `_meta.totalTokens`
+    // (probe 0.2.117). Emit only on change so a 200-chunk thought stream with
+    // a constant count becomes one host event, not 200.
+    const liveUsed = contextUsedFromUpdateMeta(u);
+    if (liveUsed !== null && liveUsed !== this.lastEmittedContextTokens) {
+      this.lastEmittedContextTokens = liveUsed;
+      this.emit("contextTokens", liveUsed);
+    }
+
     const r = routeSessionUpdate(u);
     if (!r) return;
     if (r.event === "modeChanged") {

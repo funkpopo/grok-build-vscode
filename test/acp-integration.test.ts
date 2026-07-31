@@ -141,6 +141,14 @@ describe("ACP integration (real subprocess, fake CLI)", () => {
     expect(meta).toMatchObject({ totalTokens: 10 });
   });
 
+  it("live context: streaming session/update _meta.totalTokens emits contextTokens, deduped on equal values", async () => {
+    const seen: number[] = [];
+    client.on("contextTokens", (n: number) => seen.push(n));
+    await client.prompt("hello");
+    // Fake CLI stamps 42 twice then 99 once — client must emit [42, 99], not three events.
+    expect(seen).toEqual([42, 99]);
+  });
+
   it("vision: image content blocks cross the wire verbatim alongside the text block", async () => {
     const chunks: string[] = [];
     client.on("messageChunk", (t: string) => chunks.push(t));

@@ -2704,16 +2704,26 @@ See design doc for the full state machine diagram.`;
         (typeof u?.content?.text === "string" ? u.content.text : "");
       this.output.appendLine(`[plan] event payload keys: ${Object.keys(u ?? {}).join(", ")}`);
     });
+    // Live mid-turn context size from streaming session/update `_meta.totalTokens`
+    // (AcpClient already dedupes equal consecutive values). Drives the donut
+    // during a long reply so it climbs with tool results instead of waiting for
+    // turn-end meta — which is often totalTokens:0 on slash turns anyway.
+    client.on("contextTokens", (used: number) => {
+      if (gen !== session.gen) return;
+      if (typeof used !== "number" || !Number.isFinite(used) || used <= 0) return;
+      this.emit(session, { type: "contextUsage", used });
+    });
     client.on("promptComplete", (meta) => {
       if (gen !== session.gen) return;
       this.emit(session, { type: "promptComplete", meta: gateZeroTokenMeta(meta) });
       this.accumulateUsage(session, meta);
       // A zero report (stripped above) is /compact or a slash probe; neither
-      // warrants a donut update here. After /compact the fresh count comes from
-      // the live auto_compact_completed notification (primary), else
-      // `_x.ai/session/info`, else the hidden /session-info prompt — reading
-      // signals.json now would fetch the stale pre-compact count (the CLI
-      // recomputes it only at the next inference turn's end).
+      // warrants a donut update here. Mid-turn live counts already rode
+      // contextTokens; after /compact the fresh count comes from the live
+      // auto_compact_completed notification (primary), else `_x.ai/session/info`,
+      // else the hidden /session-info prompt — reading signals.json now would
+      // fetch the stale pre-compact count (the CLI recomputes it only at the
+      // next inference turn's end).
     });
     client.on("xaiNotification", (u) => {
       if (gen !== session.gen) return;

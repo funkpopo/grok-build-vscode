@@ -392,17 +392,38 @@ export function gateZeroTokenMeta(meta: PromptResultMeta): PromptResultMeta {
 }
 
 /**
+ * Live context size from a streaming `session/update`'s `_meta.totalTokens`.
+ *
+ * Probe-verified on grok 0.2.117: agent thought/message chunks, tool calls, and
+ * tool-call updates carry `params.update._meta.totalTokens` (context size at
+ * that moment). `parseAcpLine` already passes the whole update through — we just
+ * weren't reading it, so the donut only moved on turn-end meta / compact rail /
+ * hidden probes. Returns null for absent / 0 / non-finite (same rule as
+ * `gateZeroTokenMeta` — 0 is never a measurement). Callers should dedupe equal
+ * consecutive values: a single model call re-stamps the same count on every
+ * chunk.
+ */
+export function contextUsedFromUpdateMeta(update: unknown): number | null {
+  if (!update || typeof update !== "object") return null;
+  const meta = (update as { _meta?: unknown })._meta;
+  if (!meta || typeof meta !== "object") return null;
+  const used = (meta as { totalTokens?: unknown }).totalTokens;
+  return typeof used === "number" && Number.isFinite(used) && used > 0 ? used : null;
+}
+
+/**
  * The fresh post-compaction context size from an `_x.ai/session_notification`
  * update, or `null` when the update isn't a compaction-completed event or
  * carries no usable count. grok fires `auto_compact_completed` on BOTH a manual
  * `/compact` and the CLI's automatic compaction; `tokens_after` is the
- * post-compact used-token count. This live notification is the only instant
- * source of that number — the compact turn's own meta reports 0 (see
- * `gateZeroTokenMeta`) and signals.json keeps the pre-compact count until the
- * next inference turn's flush (research/oss-surfaces-probe.cjs, grok 0.2.101).
- * The donut tracks the context window itself (from `modelChanged`), so only
- * `used` is returned; a zero/negative/non-numeric `tokens_after` yields `null`
- * (the donut keeps its last real value).
+ * post-compact used-token count. Primary post-compact source when the live
+ * `session/update` rail is quiet (a bare `/compact` streams no chunks); the
+ * compact turn's own result meta reports 0 (see `gateZeroTokenMeta`) and
+ * signals.json keeps the pre-compact count until the next inference turn's
+ * flush (research/oss-surfaces-probe.cjs, grok 0.2.101). The donut tracks the
+ * context window itself (from `modelChanged`), so only `used` is returned; a
+ * zero/negative/non-numeric `tokens_after` yields `null` (the donut keeps its
+ * last real value).
  */
 export function contextUsedFromCompactNotification(update: unknown): number | null {
   const u = update as { sessionUpdate?: unknown; tokens_after?: unknown } | null | undefined;

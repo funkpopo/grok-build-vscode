@@ -6365,7 +6365,8 @@
         if (msg.meta?.totalTokens != null) updateDonut(msg.meta.totalTokens);
         break;
       case "contextUsage":
-        // Host sources (priority): turn meta / auto_compact_completed →
+        // Host sources (priority): live session/update `_meta.totalTokens`
+        // (mid-turn) → turn meta / auto_compact_completed →
         // `_x.ai/session/info` (control-plane) → signals.json → legacy hidden
         // /session-info prompt. Optional breakdown fields only come from
         // session/info.

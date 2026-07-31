@@ -106,7 +106,8 @@ export type HostMsg =
   | { type: "autoCompactNotice"; text: string }
   | { type: "planBlocked"; kind: string; target: string }
   | { type: "promptComplete"; meta: PromptResultMeta }
-  // Context size for the donut/popover. Sources (priority): turn meta /
+  // Context size for the donut/popover. Sources (priority): live streaming
+  // `session/update` `_meta.totalTokens` (mid-turn) → turn-end meta (non-zero) /
   // auto_compact_completed → `_x.ai/session/info` (control-plane, no window
   // cost) → signals.json → legacy hidden `/session-info` prompt. Optional
   // breakdown fields come only from session/info.
