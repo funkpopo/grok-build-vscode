@@ -12,6 +12,16 @@
 
 import type { HostMsg, WebviewMsg } from "./protocol";
 
+/** Mark a reconnect snapshot as replayed UI state. Buffers may already contain
+ * their own load-session replay brackets, so the webview treats these as nested. */
+export function bracketRemoteSnapshot(buffer: readonly HostMsg[]): HostMsg[] {
+  return [
+    { type: "historyReplay", active: true },
+    ...buffer,
+    { type: "historyReplay", active: false },
+  ];
+}
+
 // ---------- inbound: WebviewMsg from a remote client ----------
 
 /** Capability tier of a remote connection (design doc § Trust model). v1 ships
@@ -35,6 +45,7 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   // transport
   ready: "control",
   // view (read-only+)
+  remotePreferences: "view",
   listSessions: "view",
   selectRepo: "view",
   toggleRepoPin: "full",
@@ -76,10 +87,13 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   // Donut popover re-fetch — read-only meter, no turn / no mutation.
   refreshContextDetails: "view",
   pasteImage: "propose",
+  // Host validates the extension/name/bytes before staging under globalStorage.
+  uploadFile: "propose",
   removeChip: "propose",
   toggleChip: "propose",
-  // attaches a chip (host-validated against its own file index) — same class
-  // of composer-state mutation as removeChip/toggleChip
+  // attaches a chip only after an exact host mention-catalog lookup plus
+  // lexical + canonical workspace containment — same composer-state class
+  // as removeChip/toggleChip
   addMentionFile: "propose",
   // recheckConnection restarts the CLI session on the host — turn control, not handshake
   recheckConnection: "propose",
@@ -109,12 +123,20 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   pickFile: "host-local",
   voiceStart: "host-local",
   voiceStop: "host-local",
+  remoteVoiceStart: "propose",
+  remoteVoiceChunk: "propose",
+  remoteVoiceStop: "propose",
   // these write the HOST user's global config — a remote should get a
   // per-connection view pref instead (not built yet), so they stay host-local
   setShowThinking: "host-local",
   setExpandCommandOutputs: "host-local",
   setSteerByDefault: "host-local",
   setSoundNotifications: "host-local",
+  setProcessingSound: "host-local",
+  setReadRepliesAloud: "host-local",
+  setSummarizeRepliesAloud: "host-local",
+  summarizeSpeech: "host-local",
+  composerFocus: "host-local",
   // relay account actions (link/unlink/portal) manage THIS machine's device
   // token — only the local webview may drive them
   remoteSignIn: "host-local",
@@ -158,23 +180,31 @@ export function allowRemoteRepoTarget(msg: WebviewMsg, isKnownCwd: (cwd: string)
   }
 }
 
+export function sessionForRequest<T>(
+  origin: MsgOrigin,
+  local: T,
+  remote: T | undefined,
+): T | undefined {
+  return origin === "remote" ? remote : local;
+}
+
+export function sessionCwdBelongsToRepo(
+  actualCwd: string,
+  repoCwds: readonly string[],
+  sameCwd: (a: string, b: string) => boolean,
+): boolean {
+  return repoCwds.some((cwd) => sameCwd(actualCwd, cwd));
+}
+
 /** Which side a webview message came from. */
 export type MsgOrigin = "local" | "remote";
 
 /**
  * Which repository a client's history list and *New session* target.
  *
- * The repo selection is **global**, and deliberately so — that IS the remote
- * feature: one phone drives whichever project you pick, and every remote client
- * agrees on it. But the VS Code webview hides the switcher, because that window
- * already IS a repository. It can therefore neither show the selection nor
- * change it, which makes following it strictly harmful: a phone that switched
- * repos would silently re-scope the local history list, and point the local
- * *New session* button at a different checkout — where Grok would then write
- * files. So a local client reads its own workspace and ignores the selection.
- *
- * Restore this to a single global value only if/when VS Code grows the switcher
- * too; the split exists to match the affordance, not the transport.
+ * `selectedCwd` belongs to one remote client (tracked by RemoteClientState).
+ * The local VS Code webview always uses its workspace because it has no repo
+ * switcher and owns a separate focused session.
  */
 export function repoScopeFor(
   origin: MsgOrigin,
@@ -196,12 +226,12 @@ export type OutboundDisposition =
 
 export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> = {
   media: "media",
-  voiceState: "host-local",
-  voiceConfigured: "host-local",
-  voicePartial: "host-local",
-  voiceSubmit: "host-local",
-  voiceTranscript: "host-local",
-  voiceError: "host-local",
+  voiceState: "mirror",
+  voiceConfigured: "mirror",
+  voicePartial: "mirror",
+  voiceSubmit: "mirror",
+  voiceTranscript: "mirror",
+  voiceError: "mirror",
   initialState: "mirror",
   showThinking: "mirror",
   fontScale: "mirror",
@@ -227,6 +257,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   toolCall: "mirror",
   toolCallUpdate: "mirror",
   permissionRequest: "mirror",
+  permissionOptions: "mirror",
   permissionResolved: "mirror",
   exitPlanRequest: "mirror",
   planResolved: "mirror",
@@ -246,6 +277,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   clearMessages: "mirror",
   onboarding: "mirror",
   error: "mirror",
+  hostNotice: "mirror",
   xaiNotification: "mirror",
   subagentUpdate: "mirror",
   runProgress: "mirror",
@@ -253,6 +285,11 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   expandCommandOutputs: "mirror",
   steerByDefault: "mirror",
   soundNotifications: "mirror",
+  processingSound: "host-local",
+  readRepliesAloud: "host-local",
+  summarizeRepliesAloud: "host-local",
+  speechSummary: "host-local",
+  moveComposerCaret: "host-local",
   remoteStatus: "host-local",
   setAllToolDetails: "mirror",
   focusInput: "mirror",
@@ -263,6 +300,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   repos: "mirror",
   sessionDot: "mirror",
   queuedSends: "mirror",
+  submitQueuedSend: "mirror",
   steerUnavailable: "mirror",
   usage: "mirror",
 };

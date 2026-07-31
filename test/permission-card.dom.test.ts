@@ -29,6 +29,53 @@ function seedDiffAndCard(window: any, requestId: number | string = 7) {
 }
 
 describe("permission card diff preview (real chat.js in a DOM)", () => {
+  it("updates an existing card's options when Plan mode changes", () => {
+    const { window, posted, doc } = bootWebview();
+    dispatch(window, {
+      type: "permissionRequest",
+      req: {
+        id: 77,
+        toolCall: { toolCallId: "tc-mode", kind: "execute", title: "Run a command" },
+        options: [
+          { optionId: "once", name: "Allow once", kind: "allow_once" },
+          { optionId: "always", name: "Allow always", kind: "allow_always" },
+          { optionId: "reject", name: "Reject", kind: "reject_once" },
+        ],
+      },
+    });
+
+    dispatch(window, {
+      type: "permissionOptions",
+      requestId: 77,
+      options: [
+        { optionId: "once", name: "Allow once", kind: "allow_once" },
+        { optionId: "reject", name: "Reject", kind: "reject_once" },
+      ],
+    });
+    expect([...doc.querySelectorAll(".card.permission .card-actions button")]
+      .map((button) => button.textContent)).toEqual(["Allow once", "Reject"]);
+
+    dispatch(window, {
+      type: "permissionOptions",
+      requestId: 77,
+      options: [
+        { optionId: "once", name: "Allow once", kind: "allow_once" },
+        { optionId: "always", name: "Allow always", kind: "allow_always" },
+        { optionId: "reject", name: "Reject", kind: "reject_once" },
+      ],
+    });
+    const buttons = [...doc.querySelectorAll(".card.permission .card-actions button")] as HTMLButtonElement[];
+    expect(buttons.map((button) => button.textContent))
+      .toEqual(["Allow once", "Allow always", "Reject"]);
+
+    buttons[1].click();
+    expect(posted).toContainEqual({
+      type: "permissionAnswer",
+      requestId: 77,
+      optionId: "always",
+    });
+  });
+
   it("auto-opens the diff with the file content and requestId when the card appears", () => {
     const { window, posted, doc } = bootWebview();
     seedDiffAndCard(window, 7);
@@ -60,6 +107,26 @@ describe("permission card diff preview (real chat.js in a DOM)", () => {
     const openDiffs = posted.filter((m: any) => m.type === "openDiff");
     expect(openDiffs).toHaveLength(2); // auto-open + the manual re-open
     expect(openDiffs[1].requestId).toBe(9);
+  });
+
+  it("expands the existing inline tool diff instead of posting a native editor action remotely", () => {
+    const { window, posted, doc } = bootWebview({ remote: true });
+    dispatch(window, {
+      type: "toolCall",
+      call: { toolCallId: "tc1", kind: "edit", title: "Edit src/foo.ts" },
+    });
+    seedDiffAndCard(window, 10);
+
+    const details = doc.querySelector(".tool-item-diff") as HTMLElement;
+    expect(details).not.toBeNull();
+    expect(details.hidden).toBe(true);
+    expect(posted.filter((m: any) => m.type === "openDiff")).toHaveLength(0);
+
+    click(window, doc.querySelector(".card.permission .preview-link")!);
+
+    expect(details.hidden).toBe(false);
+    expect(doc.querySelector(".tool-group-body")!.hasAttribute("hidden")).toBe(false);
+    expect(posted.filter((m: any) => m.type === "openDiff")).toHaveLength(0);
   });
 
   it("answering carries the same requestId so the host can close the auto-opened tab", () => {

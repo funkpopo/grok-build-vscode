@@ -97,6 +97,7 @@ describe("ACP integration (real subprocess, fake CLI)", () => {
       cwd: workspace,
       env: {
         ...process.env,
+        GROK_HOME: path.join(planHome, ".grok"),
         FAKE_WORKSPACE_ROOT: workspace,
         FAKE_PLAN_PATH: planPath,
       },
@@ -204,6 +205,7 @@ describe("ACP integration (real subprocess, fake CLI)", () => {
       cwd: workspace,
       env: {
         ...process.env,
+        GROK_HOME: path.join(planHome, ".grok"),
         FAKE_WORKSPACE_ROOT: workspace,
         FAKE_PLAN_PATH: path.join(planHome, ".grok", "sessions", "cwd-x", "sess-effort", "plan.md"),
       },
