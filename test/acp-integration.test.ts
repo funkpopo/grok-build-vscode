@@ -150,6 +150,21 @@ describe("ACP integration (real subprocess, fake CLI)", () => {
     expect(seen).toEqual([42, 99]);
   });
 
+  it("dispatches a final interject ACK before exposing immediate process exit", async () => {
+    let accepted = false;
+    let acceptedAtExit = false;
+    const exitP = waitFor<number | null>(client, "exit");
+    client.once("exit", () => { acceptedAtExit = accepted; });
+
+    const resultP = client.interject("SCENARIO_INTERJECT_ACK_THEN_EXIT", () => {
+      accepted = true;
+    });
+
+    await expect(resultP).resolves.toBe("ok");
+    await exitP;
+    expect(acceptedAtExit).toBe(true);
+  });
+
   it("vision: image content blocks cross the wire verbatim alongside the text block", async () => {
     const chunks: string[] = [];
     client.on("messageChunk", (t: string) => chunks.push(t));
@@ -377,9 +392,9 @@ describe("ACP integration (real subprocess, fake CLI)", () => {
       destroy() {},
     };
 
-    expect(() => client.respondPermission(1, "opt-1")).not.toThrow();
-    expect(() => client.respondExitPlan(2, "rejected")).not.toThrow();
-    await expect(client.cancel()).resolves.toBeUndefined();
+    expect(client.respondPermission(1, "opt-1")).toBe(false);
+    expect(client.respondExitPlan(2, "rejected")).toBe(false);
+    await expect(client.cancel()).resolves.toBe(false);
   });
 
   it("a write to a non-writable stdin is skipped, not attempted", () => {
@@ -392,7 +407,7 @@ describe("ACP integration (real subprocess, fake CLI)", () => {
       },
       destroy() {},
     };
-    expect(() => client.respondPermission(1, "opt-1")).not.toThrow();
+    expect(client.respondPermission(1, "opt-1")).toBe(false);
     expect(called).toBe(false);
   });
 });

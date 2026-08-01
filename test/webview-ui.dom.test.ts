@@ -9,6 +9,9 @@
 //   3. Reasoning traces "no longer expandable" -> header click toggles the body
 import { describe, it, expect } from "vitest";
 import { bootWebview, dispatch, click, Posted } from "./webview-harness";
+import { countsAsUserBubble } from "../src/plan-restore";
+import { bracketRemoteSnapshot } from "../src/remote-policy";
+import type { HostMsg } from "../src/protocol";
 
 const $ = (doc: Document, id: string) => doc.getElementById(id) as HTMLElement;
 const types = (posted: Posted[]) => posted.map((p) => p.type);
@@ -438,6 +441,35 @@ describe("mode picker (the plan-gate entry path)", () => {
 
     expect(posted).toContainEqual({ type: "setMode", modeId: "plan" });
     expect((pop as any).hidden).toBe(true); // selecting a mode closes the popover
+  });
+
+  it("disables only Plan with the host's version reason, then re-enables it", () => {
+    const { window, posted, doc } = bootWebview();
+    const reason = "Plan mode requires Grok CLI 0.2.117 or newer.";
+    dispatch(window, { type: "planModeAvailability", available: false, reason });
+
+    const modeBtn = $(doc, "mode-btn") as HTMLButtonElement;
+    expect(modeBtn.disabled).toBe(false);
+    expect(modeBtn.title).toContain(reason);
+    click(window, modeBtn);
+
+    const pop = $(doc, "mode-popover");
+    let planItem = [...pop.querySelectorAll(".mode-popover-item")]
+      .find((el) => el.querySelector(".mode-item-label")!.textContent === "Plan mode") as HTMLElement;
+    expect(planItem.className).toContain("disabled");
+    expect(planItem.querySelector(".mode-item-disabled-note")?.textContent).toBe(reason);
+    click(window, planItem);
+    expect(posted).not.toContainEqual({ type: "setMode", modeId: "plan" });
+
+    click(window, modeBtn); // close the still-open picker
+    dispatch(window, { type: "planModeAvailability", available: true });
+    click(window, modeBtn);
+    planItem = [...pop.querySelectorAll(".mode-popover-item")]
+      .find((el) => el.querySelector(".mode-item-label")!.textContent === "Plan mode") as HTMLElement;
+    expect(planItem.className).not.toContain("disabled");
+    expect(planItem.querySelector(".mode-item-disabled-note")).toBeNull();
+    click(window, planItem);
+    expect(posted).toContainEqual({ type: "setMode", modeId: "plan" });
   });
 
   it("toggles the mode popover closed when the button is clicked again", () => {
@@ -1010,20 +1042,6 @@ describe("Grokking… indicator (waiting placeholder)", () => {
     expect(msg._copyText).toBe("explain this");
   });
 
-  it("is mutually exclusive with the plan-processing indicator (one waiting indicator at a time)", () => {
-    const { window, doc } = bootWebview();
-    // planProcessing then agentStart → Grokking wins, plan-processing is gone.
-    dispatch(window, { type: "planProcessing" });
-    expect(doc.querySelector(".plan-processing")).not.toBeNull();
-    dispatch(window, { type: "agentStart" });
-    expect(doc.querySelector(".plan-processing")).toBeNull();
-    expect(grokking(doc)).not.toBeNull();
-    // …and the reverse: planProcessing replaces Grokking.
-    dispatch(window, { type: "planProcessing" });
-    expect(grokking(doc)).toBeNull();
-    expect(doc.querySelector(".plan-processing")).not.toBeNull();
-  });
-
   it("does not duplicate when agentStart fires twice without content", () => {
     const { window, doc } = bootWebview();
     dispatch(window, { type: "agentStart" });
@@ -1056,6 +1074,32 @@ describe("user message (regression: doubled on grok 0.2.33)", () => {
 
     expect(users(doc).length).toBe(1);
     expect(users(doc)[0].textContent).toContain("resumed prompt");
+  });
+
+  it("renders a history batch synchronously while retaining old per-message replay support", () => {
+    const { window, doc } = bootWebview();
+
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, {
+      type: "historyBatch",
+      messages: [
+        { type: "userMessageChunk", text: "batched prompt" },
+        { type: "agentStart" },
+        { type: "messageChunk", text: "batched answer" },
+        { type: "agentEnd" },
+      ],
+    });
+    dispatch(window, { type: "historyReplay", active: false });
+
+    expect(users(doc)).toHaveLength(1);
+    expect(users(doc)[0].textContent).toContain("batched prompt");
+    expect(doc.querySelector(".msg.agent")?.textContent).toContain("batched answer");
+
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, { type: "userMessageChunk", text: "legacy prompt" });
+    dispatch(window, { type: "historyReplay", active: false });
+    expect(users(doc)).toHaveLength(2);
+    expect(users(doc)[1].textContent).toContain("legacy prompt");
   });
 });
 
@@ -1597,12 +1641,12 @@ describe("scroll-to-bottom button (#28)", () => {
 
 describe("continuous progress indicator (always show something mid-turn)", () => {
   // A *live* progress affordance: Grokking / a running tool group / Thinking /
-  // plan-processing / streaming message / an open card. A CSS-hidden thinking
+  // streaming message / an open card. A CSS-hidden thinking
   // block does NOT count (that's the whole point of the stand-in).
   const hasLiveIndicator = (doc: Document) => {
     if (
       doc.querySelector(
-        ".grokking, .thinking-indicator, .tool-group.in-progress, .plan-processing, .msg.agent, .card:not(.resolved)",
+        ".grokking, .thinking-indicator, .tool-group.in-progress, .msg.agent, .card:not(.resolved)",
       )
     )
       return true;
@@ -2264,6 +2308,91 @@ describe("agent message footer (copy + timestamp) — one per turn", () => {
 
     expect(doc.querySelector(".msg.user .msg-timestamp")!.textContent).not.toBe("");
     expect(doc.querySelector(".msg.agent .msg-timestamp")!.textContent).not.toBe("");
+  });
+});
+
+describe("user prompt counter parity (interjections never count)", () => {
+  const messageIndex = (doc: Document, text: string) =>
+    [...$(doc, "messages").children].findIndex((el) => el.textContent?.includes(text));
+
+  it("keeps the real chat.js replay counter aligned with the host across an interjection", () => {
+    const { window, doc } = bootWebview();
+    const interjection = "The user sent a message while you were working:\nrevise the plan";
+    const replayedUserMessages = ["first prompt", interjection, "second prompt"];
+    const hostCount = replayedUserMessages.filter(countsAsUserBubble).length;
+
+    dispatch(window, {
+      type: "planHistoryQueue",
+      plans: [{ text: "second plan", verdict: "rejected", afterUserMessage: 2 }],
+    });
+    dispatch(window, { type: "historyReplay", active: true });
+    dispatch(window, { type: "userMessageChunk", text: replayedUserMessages[0] });
+    dispatch(window, { type: "messageChunk", text: "first answer" });
+    dispatch(window, { type: "userMessageChunk", text: replayedUserMessages[1] });
+    dispatch(window, { type: "messageChunk", text: "continued answer" });
+    dispatch(window, { type: "userMessageChunk", text: replayedUserMessages[2] });
+    dispatch(window, { type: "messageChunk", text: "second answer" });
+    dispatch(window, { type: "historyReplay", active: false });
+
+    const realPromptBubbles = doc.querySelectorAll('.msg.user:not([data-steer="1"]):not(.queued)');
+    expect(hostCount).toBe(2);
+    expect(realPromptBubbles).toHaveLength(hostCount);
+    // afterUserMessage:2 belongs to the second turn. If replay counted the
+    // interjection, this card drained one boundary early, before second prompt.
+    expect(messageIndex(doc, "second plan")).toBeGreaterThan(messageIndex(doc, "second prompt"));
+  });
+
+  it("does not advance the live counter for a steer bubble", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "planHistoryQueue",
+      plans: [{ text: "after two prompts", verdict: "rejected", afterUserMessage: 2 }],
+    });
+    dispatch(window, { type: "userMessage", text: "live first" });
+    dispatch(window, { type: "userMessage", text: "live steer", steer: true });
+    dispatch(window, { type: "userMessage", text: "live second" });
+    // The next real boundary drains afterUserMessage:2. A wrongly-counted steer
+    // would have drained it before live second instead.
+    dispatch(window, { type: "userMessage", text: "live third" });
+
+    expect(doc.querySelectorAll('.msg.user:not([data-steer="1"]):not(.queued)')).toHaveLength(3);
+    expect(messageIndex(doc, "after two prompts")).toBeGreaterThan(messageIndex(doc, "live second"));
+    expect(messageIndex(doc, "after two prompts")).toBeLessThan(messageIndex(doc, "live third"));
+  });
+});
+
+describe("truncated remote history coordinates", () => {
+  const messageIndex = (doc: Document, text: string) =>
+    [...$(doc, "messages").children].findIndex((el) => el.textContent?.includes(text));
+
+  it("keeps a surviving plan card between the same retained agent chunks", () => {
+    const { window, doc } = bootWebview();
+    const buffer: HostMsg[] = [{
+      type: "planHistoryQueue",
+      plans: [{
+        text: "surviving plan",
+        verdict: "approved",
+        afterUserMessage: 3,
+        afterHistoryEvent: 5,
+      }],
+    }];
+    for (let n = 1; n <= 12; n++) {
+      buffer.push({ type: "userMessage", text: `prompt ${n}` });
+      if (n < 3) {
+        buffer.push({ type: "messageChunk", text: `discarded ${n}a` });
+        buffer.push({ type: "messageChunk", text: `discarded ${n}b` });
+      } else if (n === 3) {
+        buffer.push({ type: "messageChunk", text: "retained draft" });
+        buffer.push({ type: "messageChunk", text: "retained implementation" });
+      } else {
+        buffer.push({ type: "messageChunk", text: `answer ${n}` });
+      }
+    }
+
+    for (const message of bracketRemoteSnapshot(buffer)) dispatch(window, message);
+
+    expect(messageIndex(doc, "surviving plan")).toBeGreaterThan(messageIndex(doc, "retained draft"));
+    expect(messageIndex(doc, "surviving plan")).toBeLessThan(messageIndex(doc, "retained implementation"));
   });
 });
 

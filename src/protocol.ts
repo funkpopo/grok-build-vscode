@@ -44,6 +44,9 @@ export interface ToolCallPayload {
 export interface PlanHistoryItem {
   text: string;
   verdict?: "approved" | "rejected" | "abandoned" | undefined;
+  afterUserMessage?: number;
+  afterInterjection?: number;
+  afterHistoryEvent?: number;
   planPath?: string;
   planName?: string;
 }
@@ -56,6 +59,7 @@ export const HOST_CAPABILITIES = {
 
 export type HostMsg =
   | { type: "initialState"; effort: string; cwd: string; useCtrlEnter: boolean; extVersion: string; showThinking: boolean; expandCommandOutputs: boolean; steerByDefault: boolean; soundNotifications: boolean; processingSound: boolean; readRepliesAloud: boolean; capabilities: { uploadFile: boolean; remoteVoice: boolean } }
+  | { type: "planModeAvailability"; available: boolean; reason?: string }
   | { type: "showThinking"; value: boolean }
   // grok.soundNotifications — live toggle for the turn-complete/error sound (#59).
   | { type: "soundNotifications"; value: boolean }
@@ -99,9 +103,12 @@ export type HostMsg =
   | { type: "media"; media: string; src?: string; url?: string; mimeType?: string; path?: string }
   | { type: "userMessageChunk"; text: string; timestampMs?: number }
   | { type: "historyReplay"; active: boolean }
+  /** Remote reconnect snapshot delivered as one browser event. Updated clients
+   *  render every nested message synchronously; older per-message frames remain
+   *  valid and continue through their existing handlers. */
+  | { type: "historyBatch"; messages: HostMsg[] }
   | { type: "permissionHistoryQueue"; permissions: unknown[] }
   | { type: "planHistoryQueue"; plans: PlanHistoryItem[] }
-  | { type: "planProcessing" }
   | { type: "toolCall"; call: ToolCallPayload }
   | { type: "toolCallUpdate"; call: ToolCallPayload }
   | { type: "permissionRequest"; req: PermissionRequest }
@@ -110,8 +117,6 @@ export type HostMsg =
   // The host spreads the plan-review snapshot (planPath/planName) into the bare
   // ExitPlanRequest before posting, so the wire shape is wider than acp's type.
   | { type: "exitPlanRequest"; req: ExitPlanRequest & { planPath?: string; planName?: string } }
-  // Buffered right after the user's verdict (mirrors permissionResolved) so a
-  // re-focus replays the plan card collapsed instead of actionable.
   | { type: "planResolved"; requestId: number | string; verdict: "approved" | "abandoned" | "rejected" }
   | { type: "questionRequest"; req: QuestionRequest }
   | { type: "planNotice"; text: string }
@@ -200,7 +205,7 @@ export type HostMsg =
   // Session-cumulative billing (#53), summed by the host across the session's
   // turns. `turn` is the last prompt's own usage. Both omitted when the CLI sent
   // no `_meta.usage` — the popover then shows only the context row, never zeros.
-  | { type: "usage"; turn?: PromptUsage; session?: PromptUsage };
+  | { type: "usage"; turn?: PromptUsage; session?: PromptUsage; afterUserMessage?: number; afterHistoryEvent?: number };
 
 /** webview -> host */
 export type WebviewMsg =
@@ -328,14 +333,14 @@ export type WebviewMsg =
 // error). The runtime arrays are just the keys, so they can never drift from the
 // union without failing the build.
 const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
-  initialState: true, showThinking: true, fontScale: true, grokUpdateStatus: true,
+  initialState: true, planModeAvailability: true, showThinking: true, fontScale: true, grokUpdateStatus: true,
   initialized: true, cliUpdating: true, session: true, modelChanged: true,
   modeChanged: true, openModePopover: true, voiceState: true, voiceConfigured: true,
   voicePartial: true, voiceSubmit: true, voiceTranscript: true, voiceError: true,
   chips: true, commandsUpdate: true, mentionResults: true, userMessage: true, agentStart: true,
   thoughtChunk: true, messageChunk: true, media: true, userMessageChunk: true,
-  historyReplay: true, permissionHistoryQueue: true, planHistoryQueue: true,
-  planProcessing: true, toolCall: true, toolCallUpdate: true, permissionRequest: true, permissionOptions: true,
+  historyReplay: true, historyBatch: true, permissionHistoryQueue: true, planHistoryQueue: true,
+  toolCall: true, toolCallUpdate: true, permissionRequest: true, permissionOptions: true,
   permissionResolved: true, exitPlanRequest: true, planResolved: true, questionRequest: true,
   planNotice: true, autoCompactNotice: true, planBlocked: true, promptComplete: true, contextUsage: true, agentReset: true,
   agentError: true, agentEnd: true, exit: true, setBusy: true, summarizing: true,

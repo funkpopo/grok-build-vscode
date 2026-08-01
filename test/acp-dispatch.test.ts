@@ -29,6 +29,7 @@ import {
   usageIsRealMeasurement,
   makeAckResponse,
   makeExitPlanResponse,
+  makeExitPlanUnavailableResponse,
   makePermissionCancelledResponse,
   makePermissionResponse,
   makeQuestionCancelledResponse,
@@ -544,18 +545,33 @@ describe("response builders", () => {
     });
   });
 
-  it("makeExitPlanResponse: approved sends result, rejected/abandoned send error", () => {
-    expect(makeExitPlanResponse(9, "approved").result).toEqual({ outcome: "approved" });
-    expect(makeExitPlanResponse(9, "rejected").error?.code).toBe(-32000);
-    expect(makeExitPlanResponse(9, "rejected").result).toBeUndefined();
-    expect(makeExitPlanResponse(9, "abandoned").error?.code).toBe(-32000);
-    expect(makeExitPlanResponse(9, "abandoned").result).toBeUndefined();
+  it("makeExitPlanResponse maps UI verdicts to native successful outcomes", () => {
+    expect(makeExitPlanResponse(9, "approved")).toEqual({
+      jsonrpc: "2.0", id: 9, result: { outcome: "approved" },
+    });
+    expect(makeExitPlanResponse(9, "rejected")).toEqual({
+      jsonrpc: "2.0", id: 9, result: { outcome: "cancelled" },
+    });
+    expect(makeExitPlanResponse(9, "abandoned")).toEqual({
+      jsonrpc: "2.0", id: 9, result: { outcome: "abandoned" },
+    });
   });
 
   it("makeExitPlanResponse wraps in jsonrpc 2.0 envelope", () => {
     const r = makeExitPlanResponse(42, "approved");
     expect(r.jsonrpc).toBe("2.0");
     expect(r.id).toBe(42);
+  });
+
+  it("rejects exit-plan requests instead of sending an unsafe success below the floor", () => {
+    expect(makeExitPlanUnavailableResponse(43)).toEqual({
+      jsonrpc: "2.0",
+      id: 43,
+      error: {
+        code: -32000,
+        message: "Plan mode is unavailable for this Grok CLI version",
+      },
+    });
   });
 
   it("makeAckResponse defaults to empty result", () => {
