@@ -1292,6 +1292,46 @@ describe("gear menu — Other group + About / Config & debug sub-views", () => {
     click(h.window, itemByText(h.doc, "Show extension logs"));
     expect(types(h.posted)).toContain("showLogs");
   });
+
+  it("MCP servers opens an in-panel list with a global-scope warning and enable toggle", () => {
+    const h = boot();
+    click(h.window, $(h.doc, "gear-btn"));
+    click(h.window, itemByText(h.doc, "Config & debug"));
+    click(h.window, itemByText(h.doc, "MCP servers"));
+
+    expect(types(h.posted)).toContain("listMcpServers");
+    // Loading lives on a popover-info row (not a clickable item) until the host answers.
+    expect((gear(h.doc).textContent || "")).toMatch(/Loading/);
+
+    dispatch(h.window, {
+      type: "mcpServers",
+      servers: [
+        {
+          name: "chrome-devtools",
+          enabled: true,
+          status: "ready",
+          toolCount: 29,
+          command: "npx",
+          args: ["chrome-devtools-mcp@latest"],
+        },
+      ],
+      source: "session",
+      warning: "Enable/disable is global — it updates your user Grok config and applies to every session on this machine.",
+    });
+
+    const panelText = gear(h.doc).textContent || "";
+    expect(panelText).toMatch(/global/i);
+    expect(panelText).toContain("chrome-devtools");
+    expect(panelText).toContain("29 tools");
+
+    const sw = h.doc.querySelector(".mcp-server-row .popover-switch") as HTMLElement;
+    expect(sw).toBeTruthy();
+    expect(sw.classList.contains("on")).toBe(true);
+    click(h.window, sw);
+    expect(h.posted.some((p) =>
+      p.type === "setMcpServerEnabled" && p.name === "chrome-devtools" && p.enabled === false,
+    )).toBe(true);
+  });
 });
 
 describe("Auto accept mode label (#25 rename)", () => {

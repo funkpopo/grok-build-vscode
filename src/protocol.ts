@@ -208,7 +208,29 @@ export type HostMsg =
   // Session-cumulative billing (#53), summed by the host across the session's
   // turns. `turn` is the last prompt's own usage. Both omitted when the CLI sent
   // no `_meta.usage` — the popover then shows only the context row, never zeros.
-  | { type: "usage"; turn?: PromptUsage; session?: PromptUsage; afterUserMessage?: number; afterHistoryEvent?: number };
+  | { type: "usage"; turn?: PromptUsage; session?: PromptUsage; afterUserMessage?: number; afterHistoryEvent?: number }
+  // MCP servers panel (CLI 0.2.113+). Host-local gear UI; `unsupported` when
+  // neither `_x.ai/mcp/list` nor `grok mcp list --json` can supply a catalog.
+  // `source` tells the panel whether the rows are live-session or config-only.
+  | {
+      type: "mcpServers";
+      servers: Array<{
+        name: string;
+        enabled: boolean;
+        status?: string;
+        source?: string;
+        scope?: string;
+        type?: string;
+        command?: string;
+        args?: string[];
+        url?: string;
+        toolCount?: number;
+        error?: string;
+      }>;
+      unsupported?: boolean;
+      source?: "session" | "cli" | "none";
+      warning?: string;
+    };
 
 /** webview -> host */
 export type WebviewMsg =
@@ -238,6 +260,11 @@ export type WebviewMsg =
   | { type: "setEffort"; level: string }
   | { type: "openGlobalConfig" }
   | { type: "openProjectConfig" }
+  // Open/refresh the MCP servers gear panel (replaces the old terminal-only list).
+  | { type: "listMcpServers" }
+  // Persist enable/disable via `grok mcp enable|disable` (global user config).
+  | { type: "setMcpServerEnabled"; name: string; enabled: boolean }
+  /** @deprecated Prefer `listMcpServers`. Kept so older webviews still open the panel. */
   | { type: "runMcpList" }
   | { type: "showLogs" }
   | { type: "moveView"; location: "panel" | "sidebar" | "auxiliarybar" }
@@ -360,14 +387,14 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   soundNotifications: true, processingSound: true, readRepliesAloud: true, summarizeRepliesAloud: true, speechSummary: true, imageFull: true, moveComposerCaret: true, remoteStatus: true,
   setAllToolDetails: true, focusInput: true, restoreComposer: true, truncateMessages: true, uiConfirmRequest: true,
   sessions: true, repoSessions: true, repos: true, sessionDot: true, queuedSends: true, submitQueuedSend: true,
-  steerUnavailable: true, usage: true,
+  steerUnavailable: true, usage: true, mcpServers: true,
 };
 
 const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   ready: true, remotePreferences: true, send: true, newSession: true, cancel: true, pickModel: true,
   setMode: true, removeChip: true, toggleChip: true, openFile: true, openUrl: true,
   openText: true, openDiff: true, exportExpr: true, setEffort: true, openGlobalConfig: true,
-  openProjectConfig: true, runMcpList: true, showLogs: true, moveView: true,
+  openProjectConfig: true, listMcpServers: true, setMcpServerEnabled: true, runMcpList: true, showLogs: true, moveView: true,
   setShowThinking: true, setExpandCommandOutputs: true, setSteerByDefault: true,
   setSoundNotifications: true, setProcessingSound: true, setReadRepliesAloud: true, setSummarizeRepliesAloud: true, summarizeSpeech: true, requestImageFull: true, composerFocus: true,
   dropFile: true, permissionAnswer: true, exitPlanAnswer: true, questionAnswer: true,

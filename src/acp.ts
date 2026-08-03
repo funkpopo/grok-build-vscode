@@ -52,6 +52,16 @@ import {
   type RewindMode,
   type RewindPoint,
 } from "./rewind";
+import {
+  isMcpServerMethod,
+  parseMcpInitProgress,
+  parseMcpInitialized,
+  parseMcpListResult,
+  parseMcpServerStatus,
+  parseMcpServersUpdated,
+  type McpListResult,
+  type McpServerStatus,
+} from "./mcp";
 
 export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
@@ -604,6 +614,27 @@ export class AcpClient extends EventEmitter {
   }
 
   /**
+   * List MCP servers known to this live session (CLI 0.2.113+).
+   * `_x.ai/mcp/list` returns session status + discovered tools per server.
+   * Enable/disable is **not** an RPC — use `grok mcp enable|disable` (global
+   * user-config side effect). `"unsupported"` on older CLIs (-32601).
+   */
+  async listMcpServers(): Promise<McpListResult | "unsupported"> {
+    try {
+      const params: Record<string, string> = {};
+      if (this.sessionId) params.sessionId = this.sessionId;
+      const r = await this.request("_x.ai/mcp/list", params);
+      return parseMcpListResult(r);
+    } catch (e: any) {
+      if (isMethodNotFoundError(e)) {
+        this.opts.log("[mcp] CLI does not support _x.ai/mcp/list");
+        return "unsupported";
+      }
+      throw e;
+    }
+  }
+
+  /**
    * List rewind points for this session (P2-9). One point per user prompt;
    * each carries a prompt preview + whether file snapshots exist.
    * `"unsupported"` on older CLIs (-32601).
@@ -1056,6 +1087,37 @@ export class AcpClient extends EventEmitter {
         // unparseable so the host can log the raw params.
         const status = parseWorktreeStatus(params) ?? { status: "unknown" };
         this.emit("worktreeStatus", status, params);
+        if (id != null) this.respondOk(id, {});
+        return;
+      }
+      // MCP push rails (CLI 0.2.113+). These arrive as top-level server methods
+      // (not session_notification updates). Always ACK so the agent doesn't hang.
+      if (isMcpServerMethod(method)) {
+        if (
+          method === "_x.ai/mcp/servers_updated" ||
+          method === "x.ai/mcp/servers_updated"
+        ) {
+          const updated = parseMcpServersUpdated(params);
+          if (updated) this.emit("mcpServersUpdated", updated);
+        } else if (
+          method === "_x.ai/mcp_initialized" ||
+          method === "x.ai/mcp_initialized"
+        ) {
+          const init = parseMcpInitialized(params);
+          if (init) this.emit("mcpInitialized", init);
+        } else if (
+          method === "_x.ai/mcp/init_progress" ||
+          method === "x.ai/mcp/init_progress"
+        ) {
+          const progress = parseMcpInitProgress(params);
+          if (progress) this.emit("mcpInitProgress", progress);
+        } else if (
+          method === "_x.ai/mcp/server_status" ||
+          method === "x.ai/mcp/server_status"
+        ) {
+          const status: McpServerStatus | null = parseMcpServerStatus(params);
+          if (status) this.emit("mcpServerStatus", status);
+        }
         if (id != null) this.respondOk(id, {});
         return;
       }

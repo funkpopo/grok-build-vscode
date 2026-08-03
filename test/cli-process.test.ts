@@ -13,7 +13,8 @@ describe("grok CLI process invocation", () => {
   it("keeps every one-shot sidebar invocation on the shared wrapper", () => {
     const sidebar = readFileSync(new URL("../src/sidebar.ts", import.meta.url), "utf8");
     expect(sidebar).not.toMatch(/\bexecFile(?:Async)?\s*\(/);
-    expect(sidebar.match(/execGrokCli\s*\(/g)).toHaveLength(5);
+    // version, update-check, update, reactive downgrade, mcp list, mcp enable/disable
+    expect(sidebar.match(/execGrokCli\s*\(/g)).toHaveLength(7);
   });
 
   it("shares the same shim predicate with the ACP spawn path", () => {

@@ -232,6 +232,35 @@ a:hover {
 }
 .popover-switch.on .popover-switch-knob { transform: translateX(11px); }
 
+/* MCP servers panel — two-line label + switch, plus the global-scope warning. */
+.mcp-server-row { align-items: flex-start; }
+.mcp-server-label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.mcp-server-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mcp-server-detail {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.popover-mcp-warning {
+  color: var(--vscode-descriptionForeground);
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: normal;
+}
+
 /* ---- messages ---- */
 
 .messages {

@@ -265,6 +265,9 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   exportExpr: "host-local",
   openGlobalConfig: "host-local",
   openProjectConfig: "host-local",
+  // MCP enable/disable writes the desk's user config — never a remote concern.
+  listMcpServers: "host-local",
+  setMcpServerEnabled: "host-local",
   runMcpList: "host-local",
   showLogs: "host-local",
   moveView: "host-local",
@@ -475,6 +478,8 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   submitQueuedSend: "mirror",
   steerUnavailable: "mirror",
   usage: "mirror",
+  // MCP panel is desk-only (config writes + gear UI); remotes hide the section.
+  mcpServers: "host-local",
 };
 
 // ---------- media inlining ----------

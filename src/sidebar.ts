@@ -165,6 +165,13 @@ import {
   parseRunProgressUpdate,
   workflowControlCommand,
 } from "./run-progress";
+import {
+  MCP_GLOBAL_SCOPE_WARNING,
+  mcpToolsRefreshedNote,
+  mergeMcpServerLists,
+  parseMcpCliList,
+  type McpServerView,
+} from "./mcp";
 
 // HostMsg (host -> webview) and WebviewMsg (webview -> host) both live in
 // src/protocol.ts now — the single source of truth for the message contract,
@@ -2945,6 +2952,8 @@ See design doc for the full state machine diagram.`;
       log: (msg) => this.output.appendLine(msg),
     });
     session.client = client;
+    // Fresh process — wait for its own mcp_initialized before mid-session notices.
+    session.mcpInitialized = false;
 
     // fs handlers (mandatory — the agent calls these to read/write files)
     client.fsRead = async (p: string) => {
@@ -3162,6 +3171,32 @@ See design doc for the full state machine diagram.`;
     client.on("contextUsage", (used: number) => {
       if (gen !== session.gen) return;
       this.emit(session, { type: "contextUsage", used });
+    });
+    client.on("mcpServersUpdated", () => {
+      if (gen !== session.gen) return;
+      // Startup always pushes servers_updated before mcp_initialized — stay
+      // quiet until the first init lands, then treat later updates as a refresh.
+      if (session.mcpInitialized) {
+        this.emit(session, {
+          type: "hostNotice",
+          level: "info",
+          text: mcpToolsRefreshedNote(),
+        });
+        void this.refreshMcpServers(session, { quiet: true });
+      }
+    });
+    client.on("mcpInitialized", (info: { mcpToolCount: number }) => {
+      if (gen !== session.gen) return;
+      const first = !session.mcpInitialized;
+      session.mcpInitialized = true;
+      if (!first) {
+        this.emit(session, {
+          type: "hostNotice",
+          level: "info",
+          text: mcpToolsRefreshedNote(info.mcpToolCount),
+        });
+        void this.refreshMcpServers(session, { quiet: true });
+      }
     });
     client.on("xaiNotification", (u) => {
       if (gen !== session.gen) return;
@@ -3985,22 +4020,15 @@ See design doc for the full state machine diagram.`;
         await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(projCfg));
         break;
       }
+      case "listMcpServers":
       case "runMcpList": {
-        // Run grok as the terminal's own process (shellPath/shellArgs) rather than
-        // typing a quoted path into the user's shell. On Windows the default
-        // terminal is PowerShell, which parses `"C:\…\grok.exe" mcp list` as a
-        // string literal and errors "Unexpected token". Launching the binary
-        // directly sidesteps shell quoting entirely and behaves the same on
-        // PowerShell, cmd, and POSIX shells.
-        const mcpCli = this.cliPath || locateGrokCli(
-          vscode.workspace.getConfiguration("grok").get<string>("cliPath", ""),
-        );
-        const mcpCwd = this.sessionCwd(session);
-        const term = mcpCli
-          ? vscode.window.createTerminal({ name: "Grok MCP", shellPath: mcpCli, shellArgs: ["mcp", "list"], cwd: mcpCwd })
-          : vscode.window.createTerminal("Grok MCP");
-        term.show();
-        if (!mcpCli) term.sendText("grok mcp list");
+        // Gear → MCP servers: in-panel list with enable/disable (CLI 0.2.113+).
+        // Older webviews still post runMcpList — same path.
+        await this.refreshMcpServers(session);
+        break;
+      }
+      case "setMcpServerEnabled": {
+        await this.setMcpServerEnabled(session, msg.name, !!msg.enabled);
         break;
       }
       case "showLogs":
@@ -4957,6 +4985,130 @@ See design doc for the full state machine diagram.`;
 
   private postShowThinking(): void {
     this.post({ type: "showThinking", value: this.showThinking() });
+  }
+
+  /**
+   * MCP servers panel (CLI 0.2.113+). Prefer the live `_x.ai/mcp/list` catalog
+   * (status + tools); fall back to `grok mcp list --json` for config-only rows
+   * when the RPC is missing or the session isn't up yet. Merges both when both
+   * succeed so CLI `scope` survives next to session status.
+   */
+  private async refreshMcpServers(
+    session: Session,
+    opts?: { quiet?: boolean },
+  ): Promise<void> {
+    const cwd = this.sessionCwd(session);
+    const cliPath = this.cliPath || locateGrokCli(
+      vscode.workspace.getConfiguration("grok").get<string>("cliPath", ""),
+    );
+
+    let sessionServers: McpServerView[] | undefined;
+    let sessionUnsupported = false;
+    if (session.client) {
+      try {
+        const listed = await session.client.listMcpServers();
+        if (listed === "unsupported") sessionUnsupported = true;
+        else sessionServers = listed.servers;
+      } catch (e) {
+        this.output.appendLine(`[mcp] list RPC failed: ${(e as Error).message}`);
+      }
+    }
+
+    let cliServers: McpServerView[] | undefined;
+    let cliFailed = false;
+    if (cliPath) {
+      try {
+        const { stdout } = await execGrokCli(cliPath, ["mcp", "list", "--json"], {
+          cwd,
+          timeout: 15_000,
+        });
+        cliServers = parseMcpCliList(stdout).servers;
+      } catch (e) {
+        cliFailed = true;
+        this.output.appendLine(`[mcp] grok mcp list --json failed: ${(e as Error).message}`);
+      }
+    } else {
+      cliFailed = true;
+    }
+
+    let servers: McpServerView[] = [];
+    let source: "session" | "cli" | "none" = "none";
+    if (sessionServers && cliServers) {
+      servers = mergeMcpServerLists(sessionServers, cliServers);
+      source = "session";
+    } else if (sessionServers) {
+      servers = [...sessionServers].sort((a, b) => a.name.localeCompare(b.name));
+      source = "session";
+    } else if (cliServers) {
+      servers = [...cliServers].sort((a, b) => a.name.localeCompare(b.name));
+      source = "cli";
+    }
+
+    const unsupported = source === "none" && (sessionUnsupported || cliFailed);
+    // Host-local (gear UI) — post, don't emit into the session replay buffer.
+    this.post({
+      type: "mcpServers",
+      servers,
+      unsupported: unsupported || undefined,
+      source,
+      warning: MCP_GLOBAL_SCOPE_WARNING,
+    });
+    if (!opts?.quiet && unsupported) {
+      this.output.appendLine("[mcp] no MCP catalog available on this CLI/install");
+    }
+  }
+
+  /**
+   * Enable/disable via `grok mcp enable|disable <name>` — persists to the user
+   * config (global side effect; the panel warning states that). No ACP RPC
+   * exists for this (-32601). Re-lists afterward so the panel flips.
+   */
+  private async setMcpServerEnabled(
+    session: Session,
+    name: string,
+    enabled: boolean,
+  ): Promise<void> {
+    const trimmed = (name || "").trim();
+    if (!trimmed) return;
+    const cliPath = this.cliPath || locateGrokCli(
+      vscode.workspace.getConfiguration("grok").get<string>("cliPath", ""),
+    );
+    if (!cliPath) {
+      this.post({
+        type: "hostNotice",
+        level: "warning",
+        text: "Grok CLI not found — can't change MCP servers.",
+      });
+      return;
+    }
+    const cwd = this.sessionCwd(session);
+    const action = enabled ? "enable" : "disable";
+    try {
+      const { stdout, stderr } = await execGrokCli(cliPath, ["mcp", action, trimmed], {
+        cwd,
+        timeout: 20_000,
+      });
+      const detail = (stdout || stderr || "").trim();
+      this.output.appendLine(`[mcp] ${action} ${trimmed}${detail ? `: ${detail}` : ""}`);
+      this.post({
+        type: "hostNotice",
+        level: "info",
+        text: enabled
+          ? `Enabled MCP server "${trimmed}" (global).`
+          : `Disabled MCP server "${trimmed}" (global).`,
+      });
+    } catch (e: any) {
+      const detail = String(e?.stderr || e?.stdout || e?.message || e).trim();
+      this.output.appendLine(`[mcp] ${action} ${trimmed} failed: ${detail}`);
+      this.post({
+        type: "hostNotice",
+        level: "warning",
+        text: detail
+          ? `Could not ${action} MCP server "${trimmed}": ${detail}`
+          : `Could not ${action} MCP server "${trimmed}".`,
+      });
+    }
+    await this.refreshMcpServers(session, { quiet: true });
   }
 
   /** Anonymous, per-install GUID — generated once and kept in globalState (so it

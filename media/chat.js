@@ -475,9 +475,12 @@
     planModeUnavailableReason: "",
     // Extension version (from initialState) — shown in the gear → About panel.
     extVersion: "",
-    // Which gear-popover view is showing ("main"|"model"|"about"|"config"), so an
-    // async grokUpdateStatus only re-renders About when it's the visible view.
+    // Which gear-popover view is showing ("main"|"model"|"about"|"config"|"mcp"),
+    // so an async grokUpdateStatus / mcpServers only re-renders when that view
+    // is visible.
     gearView: "main",
+    // Latest MCP servers catalog for the gear panel (host posts mcpServers).
+    mcpServers: null,
     // Latest `grok update --check` result for the About panel: { checking } while
     // in flight, then { current, latest, updateAvailable, error }.
     grokUpdate: null,
@@ -2274,9 +2277,8 @@
         vscode.postMessage({ type: "openProjectConfig" });
         closePopovers();
       });
-      addGearItem('<span>MCP servers</span><span class="popover-external">↗</span>', () => {
-        vscode.postMessage({ type: "runMcpList" });
-        closePopovers();
+      addGearItem('<span>MCP servers</span><span class="popover-chevron">›</span>', () => {
+        renderMcpPanel(true);
       });
       addGearItem("<span>Show extension logs</span>", () => {
         vscode.postMessage({ type: "showLogs" });
@@ -2305,6 +2307,98 @@
         closePopovers();
       });
     }
+  }
+
+  // MCP servers panel (CLI 0.2.113+): list + enable/disable with a clear global
+  // scope warning. Host supplies rows via `mcpServers`; enable/disable goes
+  // through `grok mcp enable|disable` (no ACP RPC).
+  function renderMcpPanel(requestRefresh) {
+    state.gearView = "mcp";
+    gearPopover.innerHTML = "";
+    addGearItem('<span class="popover-back">← Config &amp; debug</span>', renderConfigDebugPanel);
+    if (requestRefresh) {
+      state.mcpServers = state.mcpServers || { servers: [], loading: true };
+      vscode.postMessage({ type: "listMcpServers" });
+    }
+    const catalog = state.mcpServers;
+    const warning = (catalog && catalog.warning) ||
+      "Enable/disable is global — it updates your user Grok config and applies to every session on this machine.";
+    addGearInfo(`<span class="popover-mcp-warning" title="${escapeHtml(warning)}">${escapeHtml(warning)}</span>`);
+    addGearSep();
+
+    if (!catalog || catalog.loading) {
+      addGearInfo('<span class="popover-ver">Loading…</span>');
+      return;
+    }
+    if (catalog.unsupported) {
+      addGearInfo('<span>MCP list unavailable on this CLI</span><span class="popover-ver">Update Grok</span>');
+      addGearItem("<span>Open global config</span>", () => {
+        vscode.postMessage({ type: "openGlobalConfig" });
+        closePopovers();
+      });
+      return;
+    }
+    const servers = Array.isArray(catalog.servers) ? catalog.servers : [];
+    if (servers.length === 0) {
+      addGearInfo("<span>No MCP servers configured</span>");
+      addGearItem("<span>Open project config</span>", () => {
+        vscode.postMessage({ type: "openProjectConfig" });
+        closePopovers();
+      });
+      addGearItem("<span>Open global config</span>", () => {
+        vscode.postMessage({ type: "openGlobalConfig" });
+        closePopovers();
+      });
+      return;
+    }
+    for (const server of servers) {
+      const name = server && server.name ? String(server.name) : "";
+      if (!name) continue;
+      const enabled = !!server.enabled;
+      const detail = mcpServerDetailLine(server);
+      const row = document.createElement("div");
+      row.className = "toolbar-popover-item mcp-server-row";
+      row.innerHTML =
+        `<span class="mcp-server-label">` +
+          `<span class="mcp-server-name">${escapeHtml(name)}</span>` +
+          (detail ? `<span class="mcp-server-detail">${escapeHtml(detail)}</span>` : "") +
+        `</span>` +
+        `<span class="popover-switch${enabled ? " on" : ""}" role="switch" aria-checked="${enabled}" ` +
+          `title="${enabled ? "Disable" : "Enable"} ${escapeHtml(name)} (global)">` +
+          `<span class="popover-switch-knob"></span></span>`;
+      const sw = row.querySelector(".popover-switch");
+      sw.onclick = (e) => {
+        e.stopPropagation();
+        // Optimistic flip so the switch feels instant; host re-posts truth.
+        server.enabled = !enabled;
+        if (state.mcpServers && Array.isArray(state.mcpServers.servers)) {
+          state.mcpServers = { ...state.mcpServers, servers: state.mcpServers.servers.slice() };
+        }
+        vscode.postMessage({ type: "setMcpServerEnabled", name, enabled: !enabled });
+        renderMcpPanel(false);
+      };
+      gearPopover.appendChild(row);
+    }
+  }
+
+  function mcpServerDetailLine(server) {
+    if (!server || typeof server !== "object") return "";
+    const bits = [];
+    if (server.scope === "project") bits.push("project");
+    else if (server.scope === "user") bits.push("user");
+    if (server.source && server.source !== "local") bits.push(String(server.source));
+    if (server.status) bits.push(String(server.status));
+    if (typeof server.toolCount === "number" && server.toolCount > 0) {
+      bits.push(server.toolCount === 1 ? "1 tool" : `${server.toolCount} tools`);
+    }
+    if (server.url) bits.push(String(server.url));
+    else if (server.command) {
+      const args = Array.isArray(server.args) ? " " + server.args.join(" ") : "";
+      const cmd = `${server.command}${args}`.trim();
+      bits.push(cmd.length > 48 ? cmd.slice(0, 45) + "…" : cmd);
+    }
+    if (server.error) bits.push(String(server.error));
+    return bits.join(" · ");
   }
 
   function renderModelPicker() {
@@ -3232,6 +3326,8 @@
     // later echo can't try to remove a node from the previous session.
     state.optimisticSendEl = null;
     state.isWorktree = false; // re-set by the incoming session's `session` message
+    // MCP catalog is process-scoped; drop a stale panel list on session swap.
+    state.mcpServers = null;
     // The caret belongs in the box after any session swap — new session, a
     // history-row re-focus, a disk restore (all funnel through here via the
     // host's clearMessages). Guarded on document.hasFocus(): user-initiated
@@ -8483,6 +8579,16 @@
         break;
       case "hostNotice":
         addPlanNotice(msg.text);
+        break;
+      case "mcpServers":
+        state.mcpServers = {
+          servers: Array.isArray(msg.servers) ? msg.servers : [],
+          unsupported: !!msg.unsupported,
+          source: msg.source || "none",
+          warning: msg.warning || "",
+          loading: false,
+        };
+        if (!gearPopover.hidden && state.gearView === "mcp") renderMcpPanel(false);
         break;
       case "xaiNotification":
         break;

@@ -119,6 +119,13 @@ export class Session {
   sawCompactFailed = false;
 
   /**
+   * True after the first `_x.ai/mcp_initialized` for this live process.
+   * Gates the mid-session "MCP tools refreshed" notice so the startup flood
+   * (servers_updated → init_progress → initialized) stays silent.
+   */
+  mcpInitialized = false;
+
+  /**
    * Guards the one-shot expired-token auto-recovery: set when a turn's auth-like
    * error triggers a transparent process reload + resend, so a second failure
    * (genuinely dead auth or real billing) surfaces the error / re-login prompt
