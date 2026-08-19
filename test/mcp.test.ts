@@ -2,6 +2,30 @@ import { describe, expect, it } from "vitest";
 import { mcpServerDetail, mergeMcpNotification, parseMcpListResponse } from "../src/mcp";
 
 describe("MCP ACP catalog", () => {
+  it("keeps all three managed gateways and their 42 tools visible", () => {
+    const managed = (name: string, displayName: string, toolCount: number) => ({
+      name,
+      displayName,
+      source: "managed",
+      type: "managedGateway",
+      session: { enabled: true, status: "ready", tools: Array.from({ length: toolCount }, (_, i) => ({ name: `${displayName.toLowerCase()}_${i}` })) },
+    });
+    const servers = parseMcpListResponse({
+      servers: [
+        managed("managed_gateway:canva", "Canva", 32),
+        managed("managed_gateway:automations", "Automations", 9),
+        managed("managed_gateway:voice", "Voice", 1),
+      ],
+    });
+
+    expect(servers.map((server) => [server.displayName, server.managed, server.toolCount])).toEqual([
+      ["Automations", true, 9],
+      ["Canva", true, 32],
+      ["Voice", true, 1],
+    ]);
+    expect(servers.reduce((count, server) => count + (server.toolCount ?? 0), 0)).toBe(42);
+  });
+
   it("parses the wrapped response, sorts display names, and keeps tool metadata", () => {
     const tools = [{ name: "search", description: "Find designs", inputSchema: { type: "object" } }];
     expect(parseMcpListResponse({
@@ -25,6 +49,12 @@ describe("MCP ACP catalog", () => {
   it("unwraps the extra result envelope emitted by Grok over ACP", () => {
     expect(parseMcpListResponse({ result: { servers: [{ name: "canva", source: "local" }] } })).toEqual([
       { name: "canva", enabled: true, source: "local" },
+    ]);
+  });
+
+  it("keeps a reported tool count when a server omits the expanded tool list", () => {
+    expect(parseMcpListResponse({ servers: [{ name: "managed_gateway:voice", source: "managed", toolCount: 1 }] })).toEqual([
+      { name: "managed_gateway:voice", enabled: true, source: "managed", managed: true, toolCount: 1 },
     ]);
   });
 

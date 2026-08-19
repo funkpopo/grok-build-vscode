@@ -759,6 +759,10 @@ export class GrokSidebar {
   private providerRefreshInFlight = false;
   private mcpServers: McpServerView[] = [];
   private mcpListSupported: boolean | undefined;
+  /** The focused session whose `_x.ai/mcp/list` result owns `mcpServers`. */
+  private mcpCatalogSession?: Session;
+  /** The ACP client that produced the current catalog; changes on restart. */
+  private mcpCatalogClient?: AcpClient;
   private grokVersionProbe?: Promise<string>;
   private codexVersionProbe?: Promise<string>;
   private claudeVersionProbe?: Promise<string>;
@@ -7239,15 +7243,23 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
     });
     client.on("mcpNotification", (method: string, params: unknown) => {
-      if (gen !== session.gen || this.mcpListSupported === false) return;
+      // MCP inventory is session-scoped even though the connector account is
+      // machine-global. A background session must not update the Settings
+      // catalog for the focused session, and notifications before the initial
+      // list response must not be treated as a complete inventory.
+      if (
+        gen !== session.gen ||
+        session !== this.focused ||
+        this.mcpCatalogSession !== session ||
+        this.mcpCatalogClient !== client ||
+        this.mcpListSupported !== true
+      ) return;
       this.mcpServers = mergeMcpNotification(this.mcpServers, method, params);
-      if (this.mcpListSupported === true) {
-        this.postMcpServers({
-          type: "mcpServers",
-          servers: this.mcpServers,
-          warning: MCP_GLOBAL_SCOPE_WARNING,
-        });
-      }
+      this.postMcpServers({
+        type: "mcpServers",
+        servers: this.mcpServers,
+        warning: MCP_GLOBAL_SCOPE_WARNING,
+      });
     });
     client.on("xaiNotification", (u) => {
       if (gen !== session.gen) return;
@@ -8834,13 +8846,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
   /** Read MCP inventory through the active Grok ACP session. */
   private async refreshMcpServers(session: Session): Promise<void> {
+    this.mcpCatalogSession = session;
+    this.mcpListSupported = undefined;
+    this.mcpServers = [];
     this.postMcpServers({
       type: "mcpServers",
-      servers: this.mcpServers,
+      servers: [],
       loading: true,
       warning: MCP_GLOBAL_SCOPE_WARNING,
     });
     const client = session.provider === "grok" ? session.client : undefined;
+    this.mcpCatalogClient = client;
     if (!client) {
       this.mcpListSupported = undefined;
       this.mcpServers = [];
@@ -8854,7 +8870,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     }
     try {
       const result = await client.listMcpServers();
-      if (session.client !== client) return;
+      if (session !== this.focused || this.mcpCatalogSession !== session || session.client !== client) return;
       if (result === "unsupported") {
         this.mcpListSupported = false;
         this.mcpServers = [];

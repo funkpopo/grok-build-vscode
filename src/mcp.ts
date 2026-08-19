@@ -53,6 +53,11 @@ function textField(session: Record<string, unknown> | undefined, item: Record<st
   return text(session?.[key]) || text(item[key]);
 }
 
+function numberField(session: Record<string, unknown> | undefined, item: Record<string, unknown>, key: string): number | undefined {
+  const value = session?.[key] ?? item[key];
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
 function parseTools(value: unknown): McpToolView[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value
@@ -70,6 +75,7 @@ function parseServer(value: unknown): McpServerView | undefined {
   const source = textField(session, item, "source");
   const type = textField(session, item, "type") || textField(session, item, "transport");
   const enabled = booleanField(session, item, "enabled");
+  const reportedToolCount = numberField(session, item, "toolCount");
   return {
     name,
     ...(textField(session, item, "displayName") ? { displayName: textField(session, item, "displayName") } : {}),
@@ -82,7 +88,7 @@ function parseServer(value: unknown): McpServerView | undefined {
     ...(text(item.command) ? { command: text(item.command) } : {}),
     ...(stringArray(item.args) ? { args: stringArray(item.args) } : {}),
     ...(text(item.url) ? { url: text(item.url) } : {}),
-    ...(tools ? { tools, toolCount: tools.length } : {}),
+    ...(tools ? { tools, toolCount: tools.length } : reportedToolCount !== undefined ? { toolCount: reportedToolCount } : {}),
     ...(textField(session, item, "error") ? { error: textField(session, item, "error") } : {}),
   };
 }
