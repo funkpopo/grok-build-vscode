@@ -299,6 +299,34 @@ export function grokUpdatePolicy(_versionOutput: string, _platform: NodeJS.Platf
   return { allow: true };
 }
 
+/** The stable JSON shape returned by `grok update --check --json`. */
+export interface GrokUpdateCheck {
+  currentVersion?: string;
+  latestVersion?: string;
+  updateAvailable: boolean;
+}
+
+/**
+ * Parse the read-only update check used before an automatic extension-upgrade
+ * update. Keep malformed output separate from a valid "already current"
+ * result, so a CLI format change never silently suppresses an update.
+ */
+export function parseGrokUpdateCheckOutput(output: string): GrokUpdateCheck | undefined {
+  try {
+    const raw = JSON.parse(output) as unknown;
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+    const info = raw as Record<string, unknown>;
+    if (typeof info.updateAvailable !== "boolean") return undefined;
+    return {
+      currentVersion: typeof info.currentVersion === "string" ? info.currentVersion : undefined,
+      latestVersion: typeof info.latestVersion === "string" ? info.latestVersion : undefined,
+      updateAvailable: info.updateAvailable,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Should the host REACTIVELY downgrade the CLI after an *observed* `agent stdio`
  * init failure (handshake timeout / "exited code null")?

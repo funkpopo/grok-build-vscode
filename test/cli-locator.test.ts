@@ -8,6 +8,7 @@ import {
   parseGrokVersion,
   compareVersionTuple,
   grokUpdatePolicy,
+  parseGrokUpdateCheckOutput,
   shouldReactivelyDowngrade,
   isLockedBinaryError,
   isGrokVersionBelowRequired,
@@ -144,6 +145,28 @@ describe("required grok behavior floor", () => {
       expect(isGrokVersionBelowRequired(`grok ${version} (x) [stable]`)).toBe(false);
     }
     expect(isGrokVersionBelowRequired("grok (dev build)")).toBe(false);
+  });
+});
+
+describe("parseGrokUpdateCheckOutput", () => {
+  it("accepts the current/latest versions and update flag", () => {
+    expect(parseGrokUpdateCheckOutput(JSON.stringify({
+      currentVersion: "0.2.117",
+      latestVersion: "0.2.117",
+      updateAvailable: false,
+    }))).toEqual({
+      currentVersion: "0.2.117",
+      latestVersion: "0.2.117",
+      updateAvailable: false,
+    });
+    expect(parseGrokUpdateCheckOutput('{"currentVersion":"0.2.117","latestVersion":"0.2.118","updateAvailable":true}'))
+      .toMatchObject({ currentVersion: "0.2.117", latestVersion: "0.2.118", updateAvailable: true });
+  });
+
+  it("rejects malformed or incomplete output instead of treating it as current", () => {
+    for (const output of ["", "not json", "{}", "[]", '{"updateAvailable":"false"}']) {
+      expect(parseGrokUpdateCheckOutput(output)).toBeUndefined();
+    }
   });
 });
 

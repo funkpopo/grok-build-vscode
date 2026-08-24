@@ -15,7 +15,7 @@ describe("grok CLI process invocation", () => {
     expect(sidebar).not.toMatch(/\bexecFile(?:Async)?\s*\(/);
     expect(sidebar).not.toMatch(/execGrokCli\([^\n]*\["mcp"/);
     expect(sidebar).toContain('client.listMcpServers()');
-    expect(sidebar.match(/execGrokCli\s*\(/g)).toHaveLength(8);
+    expect(sidebar.match(/execGrokCli\s*\(/g)).toHaveLength(9);
     expect(sidebar).toMatch(/execGrokCli\(cliPath, \["--version"\],[\s\S]*parseCodexVersionOutput/);
     expect(sidebar).toMatch(/execGrokCli\(cliPath, \["--version"\],[\s\S]*parseClaudeVersionOutput/);
   });

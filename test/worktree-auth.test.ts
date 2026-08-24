@@ -529,7 +529,7 @@ describe("worktree validation reads git first", () => {
     const body = src.slice(start, src.indexOf("\n  }", src.indexOf("finally", start)));
     expect(body).toContain("updateFailed = true;");
     expect(body).toContain(
-      "if (!updateFailed) void this.state.update(CLI_UPDATE_VERSION_KEY, current);",
+      "if (!updateFailed) await this.state.update(CLI_UPDATE_VERSION_KEY, current);",
     );
   });
 

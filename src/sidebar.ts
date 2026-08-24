@@ -105,6 +105,7 @@ import {
   shouldReactivelyDowngrade,
   isLockedBinaryError,
   readCliBinaryIdentity,
+  parseGrokUpdateCheckOutput,
   resolvePlanModeAvailability,
   CLI_VERSION_CACHE_KEY,
   GROK_REQUIRED_VERSION,
@@ -6516,8 +6517,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     return this.claudeVersionProbe;
   }
 
-  /** Preserve the original silent-update contract: once per extension upgrade,
-   * from session start, with a fresh install only establishing the baseline. */
+  /** Update only when a read-only check says the CLI is stale. The check runs
+   * once per extension upgrade; a fresh install only establishes the baseline. */
   private async maybeUpdateCliOnUpgrade(cliPath: string): Promise<void> {
     if (this.cliUpdateChecked) return;
     this.cliUpdateChecked = true;
@@ -6531,6 +6532,25 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         this.host.appendLine(
           `Extension upgraded ${lastSeen} → ${current}; skipping silent CLI update (${policy.note}).`,
         );
+        return;
+      }
+      try {
+        const { stdout } = await execGrokCli(cliPath, ["update", "--check", "--json"], { timeout: 30_000 });
+        const check = parseGrokUpdateCheckOutput(stdout);
+        if (!check) throw new Error("unrecognized update-check output");
+        if (!check.updateAvailable) {
+          const installed = check.currentVersion ? `v${check.currentVersion}` : "current";
+          this.host.appendLine(
+            `Extension upgraded ${lastSeen} → ${current}; Grok Build CLI ${installed} is already up to date, skipping silent update.`,
+          );
+          return;
+        }
+      } catch (e) {
+        // A failed read-only check must not turn startup into a 180-second
+        // install attempt. Leave the marker unwritten so a later activation
+        // can retry the check after a transient network/CLI failure.
+        updateFailed = true;
+        this.host.appendLine(`grok update check failed (continuing with current binary): ${(e as Error).message}`);
         return;
       }
       const args = policy.target ? ["update", "--version", policy.target] : ["update"];
@@ -6558,7 +6578,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // Every path except a failed update: nothing to do, policy declined, or
       // it succeeded. `cliUpdateChecked` still caps this at one attempt per
       // window, so a failure retries on the next one rather than in a loop.
-      if (!updateFailed) void this.state.update(CLI_UPDATE_VERSION_KEY, current);
+      if (!updateFailed) await this.state.update(CLI_UPDATE_VERSION_KEY, current);
     }
   }
 

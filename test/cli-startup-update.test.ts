@@ -46,15 +46,26 @@ describe("CLI startup compatibility", () => {
     }
   });
 
-  it("keeps the original once-per-extension-upgrade update trigger", () => {
+  it("checks for a newer CLI before installing on an extension upgrade", () => {
     expect(update).toContain("if (this.cliUpdateChecked) return");
     expect(update).toContain("extensionWasUpgraded(lastSeen, current)");
+    expect(update).toContain('execGrokCli(cliPath, ["update", "--check", "--json"]');
+    expect(update).toContain("parseGrokUpdateCheckOutput(stdout)");
+    expect(update).toContain("if (!check.updateAvailable)");
     expect(update).toContain("execGrokCli(cliPath, args");
     // Same store, different accessor: CLI_UPDATE_VERSION_KEY is not one of the
     // keys that moved to ~/.grok, so it still lands in globalState. See
     // persisted-state.ts.
-    expect(update).toContain("this.state.update(CLI_UPDATE_VERSION_KEY, current)");
+    expect(update).toContain("await this.state.update(CLI_UPDATE_VERSION_KEY, current)");
     expect(sessionStart).toContain("await this.maybeUpdateCliOnUpgrade(cliPath)");
+  });
+
+  it("does not show the updating state when the CLI is already current", () => {
+    const check = update.indexOf('execGrokCli(cliPath, ["update", "--check", "--json"]');
+    const install = update.indexOf('this.post({ type: "cliUpdating" })');
+    expect(check).toBeGreaterThan(-1);
+    expect(install).toBeGreaterThan(check);
+    expect(update.slice(check, install)).toContain("if (!check.updateAvailable)");
   });
 
   it("keeps version gating separate from all update orchestration", () => {
