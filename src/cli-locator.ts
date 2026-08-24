@@ -304,12 +304,14 @@ export interface GrokUpdateCheck {
   currentVersion?: string;
   latestVersion?: string;
   updateAvailable: boolean;
+  error?: string;
 }
 
 /**
  * Parse the read-only update check used before an automatic extension-upgrade
- * update. Keep malformed output separate from a valid "already current"
- * result, so a CLI format change never silently suppresses an update.
+ * update. Keep malformed output and check errors separate from a valid
+ * "already current" result, so a CLI format change or failed check never
+ * silently suppresses an update.
  */
 export function parseGrokUpdateCheckOutput(output: string): GrokUpdateCheck | undefined {
   try {
@@ -321,6 +323,7 @@ export function parseGrokUpdateCheckOutput(output: string): GrokUpdateCheck | un
       currentVersion: typeof info.currentVersion === "string" ? info.currentVersion : undefined,
       latestVersion: typeof info.latestVersion === "string" ? info.latestVersion : undefined,
       updateAvailable: info.updateAvailable,
+      ...(typeof info.error === "string" ? { error: info.error } : {}),
     };
   } catch {
     return undefined;

@@ -163,6 +163,20 @@ describe("parseGrokUpdateCheckOutput", () => {
       .toMatchObject({ currentVersion: "0.2.117", latestVersion: "0.2.118", updateAvailable: true });
   });
 
+  it("preserves a check error alongside an otherwise valid result", () => {
+    expect(parseGrokUpdateCheckOutput(JSON.stringify({
+      currentVersion: "0.2.117",
+      latestVersion: "0.2.117",
+      updateAvailable: false,
+      error: "network unavailable",
+    }))).toEqual({
+      currentVersion: "0.2.117",
+      latestVersion: "0.2.117",
+      updateAvailable: false,
+      error: "network unavailable",
+    });
+  });
+
   it("rejects malformed or incomplete output instead of treating it as current", () => {
     for (const output of ["", "not json", "{}", "[]", '{"updateAvailable":"false"}']) {
       expect(parseGrokUpdateCheckOutput(output)).toBeUndefined();

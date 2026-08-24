@@ -51,7 +51,8 @@ describe("CLI startup compatibility", () => {
     expect(update).toContain("extensionWasUpgraded(lastSeen, current)");
     expect(update).toContain('execGrokCli(cliPath, ["update", "--check", "--json"]');
     expect(update).toContain("parseGrokUpdateCheckOutput(stdout)");
-    expect(update).toContain("if (!check.updateAvailable)");
+    expect(update).toContain("if (check?.updateAvailable === false && !check.error)");
+    expect(update).not.toContain('if (!check) throw new Error("unrecognized update-check output")');
     expect(update).toContain("execGrokCli(cliPath, args");
     // Same store, different accessor: CLI_UPDATE_VERSION_KEY is not one of the
     // keys that moved to ~/.grok, so it still lands in globalState. See
@@ -65,7 +66,18 @@ describe("CLI startup compatibility", () => {
     const install = update.indexOf('this.post({ type: "cliUpdating" })');
     expect(check).toBeGreaterThan(-1);
     expect(install).toBeGreaterThan(check);
-    expect(update.slice(check, install)).toContain("if (!check.updateAvailable)");
+    expect(update.slice(check, install)).toContain("if (check?.updateAvailable === false && !check.error)");
+    expect(update.slice(check, install)).toContain("if (!check)");
+  });
+
+  it("falls through to installation when the read-only check fails", () => {
+    const check = update.indexOf('execGrokCli(cliPath, ["update", "--check", "--json"]');
+    const checkCatch = update.indexOf("} catch (e) {", check);
+    const install = update.indexOf('this.post({ type: "cliUpdating" })');
+    expect(checkCatch).toBeGreaterThan(check);
+    expect(install).toBeGreaterThan(checkCatch);
+    expect(update.slice(checkCatch, install)).toContain("continuing with silent update");
+    expect(update.slice(checkCatch, install)).not.toContain("return;");
   });
 
   it("keeps version gating separate from all update orchestration", () => {

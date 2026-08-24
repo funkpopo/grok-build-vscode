@@ -6517,8 +6517,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     return this.claudeVersionProbe;
   }
 
-  /** Update only when a read-only check says the CLI is stale. The check runs
-   * once per extension upgrade; a fresh install only establishes the baseline. */
+  /** Update on an extension upgrade unless a successful read-only check says
+   * the CLI is already current. A fresh install only establishes the baseline. */
   private async maybeUpdateCliOnUpgrade(cliPath: string): Promise<void> {
     if (this.cliUpdateChecked) return;
     this.cliUpdateChecked = true;
@@ -6537,21 +6537,22 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       try {
         const { stdout } = await execGrokCli(cliPath, ["update", "--check", "--json"], { timeout: 30_000 });
         const check = parseGrokUpdateCheckOutput(stdout);
-        if (!check) throw new Error("unrecognized update-check output");
-        if (!check.updateAvailable) {
+        if (check?.updateAvailable === false && !check.error) {
           const installed = check.currentVersion ? `v${check.currentVersion}` : "current";
           this.host.appendLine(
             `Extension upgraded ${lastSeen} → ${current}; Grok Build CLI ${installed} is already up to date, skipping silent update.`,
           );
           return;
         }
+        if (!check) {
+          this.host.appendLine("grok update check returned unrecognized output; continuing with silent update.");
+        } else if (check.error) {
+          this.host.appendLine(`grok update check reported an error; continuing with silent update: ${check.error}`);
+        }
       } catch (e) {
-        // A failed read-only check must not turn startup into a 180-second
-        // install attempt. Leave the marker unwritten so a later activation
-        // can retry the check after a transient network/CLI failure.
-        updateFailed = true;
-        this.host.appendLine(`grok update check failed (continuing with current binary): ${(e as Error).message}`);
-        return;
+        // Older CLIs may reject --check --json, and a transient check failure
+        // must not suppress the upgrade that this path exists to deliver.
+        this.host.appendLine(`grok update check failed; continuing with silent update: ${(e as Error).message}`);
       }
       const args = policy.target ? ["update", "--version", policy.target] : ["update"];
       this.host.appendLine(
