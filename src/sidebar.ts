@@ -79,6 +79,7 @@ import {
   sessionHasWorkInFlight,
   sessionReadyForPrompt,
   sessionUiSnapshot,
+  turnElapsedMs,
   turnIsInFlight,
 } from "./session";
 import { buildReapCandidates, selectReapable, computeDot, Dot } from "./session-pool";
@@ -87,7 +88,7 @@ import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voi
 import { PcmVoiceStreamer, VoiceStreamer } from "./voice-streamer";
 import { summarizeForSpeech } from "./speech-summary";
 import type { PromptResultMeta, PromptUsage, SessionInfoContext } from "./acp-dispatch";
-import { MediaRef, adapterCompactSignal, adapterContextOccupancy, agentTimestampMsFromMeta, autoCompactStartedNote, childStreamFromRoute, commandOutputForToolCall, commandOutputFromLiveTerminal, contextUsedFromCompactNotification, enforceCompleteSessionCost, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, occupancyFromAdapterTurn, parseSessionInfoContext, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sessionInfoCacheFresh, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement, type UpdateRoute } from "./acp-dispatch";
+import { MediaRef, adapterCompactSignal, adapterContextOccupancy, agentTimestampMsFromMeta, autoCompactStartedNote, childStreamFromRoute, commandOutputForToolCall, commandOutputFromLiveTerminal, contextUsedFromCompactNotification, enforceCompleteSessionCost, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, occupancyFromAdapterTurn, parseSessionInfoContext, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, replayedTurnDuration, sessionInfoCacheFresh, sumUsage, summarizeBackgroundCommand, turnStatusFromPromptResult, usageIsRealMeasurement, type TurnEndStatus, type UpdateRoute } from "./acp-dispatch";
 import { createMcpPrepareState, prepareMcpToolCall } from "./mcp-tool";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
 import { beginAuthRecovery, oauthShadowsXaiApiKey } from "./auth-recovery";
@@ -3834,6 +3835,16 @@ Only continue if you trust this code.`,
     if (!session.liveFeedbackEligible) return;
     session.turnRating = rating === 1 || rating === -1 ? rating : 0;
     this.emit(session, { type: "turnFeedbackAck", rating });
+  }
+
+  /** Turn-footer fields for the HostMsg that ends the current turn — how it
+   *  ended and how long it ran (wall clock from `beginTurn`). Only the sites
+   *  that JUST settled this turn's token call this, so `turnStartedAt` is
+   *  always this turn's; a newer turn would have overwritten it only after
+   *  beginning, and such a turn is never the one being ended here. */
+  private turnEndFields(session: Session, status: TurnEndStatus): { status: TurnEndStatus; durationMs?: number } {
+    const durationMs = turnElapsedMs(session);
+    return { status, ...(durationMs !== undefined ? { durationMs } : {}) };
   }
 
   /**
@@ -8626,6 +8637,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       if (!session.inUserMessage) {
         session.replayUserRaw = "";
         session.replayUserCounted = countsAsUserBubble(text);
+        // The turn's start edge for a restored footer's duration: the newest
+        // replayed user message's own wall-clock time. Only kept when the user
+        // bubble actually renders (countsAsUserBubble) — a hidden primer or
+        // system-reminder turn is not a turn the footer describes.
+        session.replayTurnStartedAt = session.replayUserCounted
+          ? agentTimestampMsFromMeta(meta)
+          : undefined;
         session.replayUserIsInterjection = false;
         if (session.replayUserCounted) session.userMessageCount += 1;
         session.inUserMessage = true;
@@ -8638,6 +8656,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           session.userMessageCount = Math.max(0, session.userMessageCount - 1);
           session.replayUserCounted = false;
         }
+        // An interjection rides a running turn — it is never the turn the next
+        // turn_completed duration is measured from.
+        session.replayTurnStartedAt = undefined;
       }
       // No counter to re-seed: numbering restarts at #1 on every message, so a
       // restored conversation's tags say nothing about what the next one gets.
@@ -8883,10 +8904,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       if (gen !== session.gen) return;
       if ((u as { sessionUpdate?: unknown })?.sessionUpdate === "turn_completed") {
         if (session.replaying) {
+          const timestampMs = agentTimestampMsFromMeta(meta);
+          // Restored footer duration: explicit duration_ms when the CLI sends
+          // one, else the wall-clock gap from the turn's user message. Never
+          // the SUBAGENT duration_ms — that belongs to the child card.
+          const turnDurationMs = replayedTurnDuration(u, meta, session.replayTurnStartedAt);
           this.emit(session, {
             type: "subagentUpdate",
             update: u,
-            timestampMs: agentTimestampMsFromMeta(meta),
+            timestampMs,
+            ...(turnDurationMs !== undefined ? { turnDurationMs, turnStatus: "completed" as const } : {}),
           });
         }
         return;
@@ -8949,7 +8976,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         }
         return;
       }
-      this.emit(session, { type: "exit", code });
+      // A process death mid-turn ends that turn — attach the footer fields so
+      // the client can show "Failed after …". Only when a turn was actually in
+      // flight: a clean exit between turns ends no turn.
+      this.emit(session, {
+        type: "exit",
+        code,
+        ...(turnIsInFlight(session) ? this.turnEndFields(session, "failed") : {}),
+      });
       if (session.queuedSends.length) {
         session.queuedSendDispatch = undefined;
         session.queuedSendCommit = undefined;
@@ -13950,6 +13984,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.emit(session, {
       type: "agentError",
       text: "Stopped. The agent didn't answer the stop request, so its process is being restarted. This conversation is intact.",
+      ...this.turnEndFields(session, "cancelled"),
     });
     const client = await this.startSession(session.activeSessionId, session);
     // Another restart can overtake this one while it is starting. Then the
@@ -14263,7 +14298,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // turn emits its own end when it really ends. (The other agentEnd site
       // needs no guard: nothing awaits between its endTurn check and its
       // emit.)
-      if (!turnIsInFlight(session)) this.emit(session, { type: "agentEnd", meta });
+      if (!turnIsInFlight(session)) this.emit(session, { type: "agentEnd", meta, ...this.turnEndFields(session, turnStatusFromPromptResult(meta)) });
       this.noteLiveTurnEnded(session);
       // "done" only if this is still the LAST word. /compact releases its turn
       // token before awaiting the context refresh, so a send from another tab
@@ -14294,7 +14329,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // the login screen, which can't fix a limit — and show a clear limit
       // notice instead (#57).
       if (isRateLimitError(e)) {
-        this.emit(session, { type: "agentError", text: rateLimitNoticeText(e) });
+        this.emit(session, { type: "agentError", text: rateLimitNoticeText(e), ...this.turnEndFields(session, "failed") });
         this.noteLiveTurnEnded(session);
         this.setStatus(session, "error");
         return;
@@ -14306,7 +14341,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // Recovery declined (already retried this streak, or not auth-shaped):
       // promptErrorText keeps the copy consistent — the entitlement notice for
       // billing-flavored wording (#58), the raw detail otherwise.
-      this.emit(session, { type: "agentError", text: promptErrorText(e) });
+      this.emit(session, { type: "agentError", text: promptErrorText(e), ...this.turnEndFields(session, "failed") });
       this.noteLiveTurnEnded(session);
       this.setStatus(session, "error");
     } finally {
@@ -14378,7 +14413,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         return true;
       }
       if (!endTurn(session, turn)) return true;
-      this.emit(session, { type: "agentEnd", meta });
+      this.emit(session, { type: "agentEnd", meta, ...this.turnEndFields(session, turnStatusFromPromptResult(meta)) });
       this.noteLiveTurnEnded(session);
       this.setStatus(session, "done");
       session.authRecoveryTried = false; // recovered — re-arm for a future expiry
@@ -14394,7 +14429,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // The resend ran into a usage limit — that's the real story, not auth
       // (#57): a fresh process with a fresh token hit the same wall.
       if (isRateLimitError(e2)) {
-        this.emit(session, { type: "agentError", text: rateLimitNoticeText(e2) });
+        this.emit(session, { type: "agentError", text: rateLimitNoticeText(e2), ...this.turnEndFields(session, "failed") });
         this.noteLiveTurnEnded(session);
         this.setStatus(session, "error");
         return true;
@@ -14407,7 +14442,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // itself is post()ed, not emit()ed: live-only, so it can't resurrect
         // from the replay buffer on a later focus switch after the user has
         // already re-authed.
-        this.emit(session, { type: "agentError", text: errorDetail(e2) });
+        this.emit(session, { type: "agentError", text: errorDetail(e2), ...this.turnEndFields(session, "failed") });
         this.noteLiveTurnEnded(session);
         this.setStatus(session, "error");
         this.post({ type: "onboarding", state: this.onboardingForSession(session) });
@@ -14416,7 +14451,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // not a sign-in problem — promptErrorText shows the entitlement notice
         // with the CLI's own actionable advice in chat (#58), never the login
         // overlay, which can't fix it.
-        this.emit(session, { type: "agentError", text: promptErrorText(e2) });
+        this.emit(session, { type: "agentError", text: promptErrorText(e2), ...this.turnEndFields(session, "failed") });
         this.noteLiveTurnEnded(session);
         this.setStatus(session, "error");
       }
