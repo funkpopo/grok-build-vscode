@@ -12714,50 +12714,70 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // is nothing left that could write them again.
     const wasFocused = !!live && live === this.focused;
     if (isAdapterProvider(provider)) {
-      let temporary: AcpClient | undefined;
-      const name = providerDisplayName(provider);
-      try {
-        const cliPath = this.locateProvider(provider);
-        const backend = this.createProviderBackend(provider);
-        if (!cliPath || !backend) throw new Error(`${name} CLI is not available.`);
-        // TEAR THE LIVE ONE DOWN FIRST, which is what the comment above has
-        // always claimed and what the Grok branch below actually does. This
-        // branch did the opposite: it handed `live.client` its own open
-        // session and asked it to delete that, and the adapter answered
-        // `Internal error` — which the host then read out verbatim to the
-        // person, who had no way to know it meant “close it first”.
-        //
-        // Deleting through a FRESH connection is the same shape clear-all
-        // already uses for cold adapter history, so there is one mechanism
-        // here rather than two.
-        //
-        // The disposal is not conditional on the delete succeeding, and that
-        // is deliberate: this path is only reached when the asker is the one
-        // watching, so closing it is what they asked for. If the delete then
-        // fails the conversation is closed but INTACT on disk — it is still
-        // in history and still openable, which is the honest failure.
-        if (live) await this.disposeSession(live);
-        temporary = new AcpClient({
-          cliPath,
-          cwd,
-          env: { ...process.env },
-          backend,
-          log: (message) => this.host.appendLine(message),
-        });
-        await temporary.start();
-        await temporary.deleteSession(id);
-      } catch (error) {
-        const text = `${name} refused to delete this conversation: ${(error as Error).message}`;
-        this.host.appendLine(`[sessions] ${text}`);
-        if (origin === "remote" && clientId) this.sendRemoteClient(clientId, { type: "error", text });
-        else {
-          this.post({ type: "error", text });
-          void this.host.showErrorMessage(text);
+      // A CONVERSATION THE PROVIDER NEVER WROTE HAS NOTHING TO ARCHIVE.
+      //
+      // Codex implements delete as exactly one call —
+      //   async deleteSession(id) { await codexClient.threadArchive({ threadId: id }); }
+      // — and Codex writes a thread only once a turn has produced something. So
+      // deleting a conversation nobody has used yet asks it to archive a thread
+      // that does not exist, it throws, and the host repeated the adapter's own
+      // words to the person: “Internal error”. Claude behaves the same way.
+      // Reproducible every time: new session, delete while open, both providers.
+      // Grok never showed it because its branch removes a DIRECTORY, and a
+      // missing directory is harmless — that asymmetry is what named the cause.
+      //
+      // Worse than the error: the attempt left the row unusable afterwards, so a
+      // failed delete was how a conversation became permanently un-sendable.
+      //
+      // Keyed on the session's own `hasHistory`, never on the shape of an error
+      // string: `Internal error` is generic, and treating it as “not found” would
+      // swallow real failures. A cold or used conversation still goes to the
+      // provider, which is the only thing that can forget it.
+      if (live && !live.hasHistory) {
+        this.host.appendLine(
+          `[${provider}] removed empty session ${id} locally: never persisted, nothing to archive`,
+        );
+      } else {
+        let temporary: AcpClient | undefined;
+        const name = providerDisplayName(provider);
+        try {
+          const cliPath = this.locateProvider(provider);
+          const backend = this.createProviderBackend(provider);
+          if (!cliPath || !backend) throw new Error(`${name} CLI is not available.`);
+          // DISPOSING FIRST WAS TRIED HERE AND REVERTED. It looks obviously
+          // right — the comment above asks for it and the Grok branch does it —
+          // but tearing the live session down before the delete leaves it
+          // unbound and still `this.focused` for the seconds a fresh CLI needs
+          // to spawn, initialize and delete. In that window: a reconnect
+          // re-opens the conversation onto the zombie focus and a second
+          // process starts on the same id; or the person opens another
+          // conversation and the finishing delete moves them onto a blank
+          // session, so their next message goes somewhere they did not choose.
+          // Independent review found all three. The real defect is the RECOVERY
+          // below, not the order here.
+          const client = live?.client ?? (temporary = new AcpClient({
+            cliPath,
+            cwd,
+            env: { ...process.env },
+            backend,
+            log: (message) => this.host.appendLine(message),
+          }));
+          if (temporary) await temporary.start();
+          await client.deleteSession(id);
+        } catch (error) {
+          const text = `${name} refused to delete this conversation: ${(error as Error).message}`;
+          this.host.appendLine(`[sessions] ${text}`);
+          if (origin === "remote" && clientId) this.sendRemoteClient(clientId, { type: "error", text });
+          else {
+            this.post({ type: "error", text });
+            void this.host.showErrorMessage(text);
+          }
+          if (temporary) await temporary.dispose();
+          return;
         }
         if (temporary) await temporary.dispose();
-        return;
       }
-      if (temporary) await temporary.dispose();
+      if (live) this.disposeSession(live);
       const history = this.adapterHistory(provider);
       if (history) {
         for (const [key, entries] of history.cache) {
@@ -12765,10 +12785,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         }
       }
     } else {
-      // Awaited: the comment above promises the process is gone before the
-      // files are, and a floating promise does not deliver that. Clear-all
-      // collects and awaits these; this call site did not.
-      if (live) await this.disposeSession(live);
+      // NOT awaited, and that is a deliberate revert rather than an
+      // oversight: awaiting widens the same unbound window the adapter
+      // branch above was reverted for, by up to the process kill timeout.
+      // Worth revisiting only together with the recovery this path lacks.
+      if (live) this.disposeSession(live);
       try {
         deleteSessionDir({
           fs: defaultFs,

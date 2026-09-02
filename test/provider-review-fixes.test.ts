@@ -338,6 +338,27 @@ describe("deleting a conversation on a machine nobody sits at", () => {
     expect(body).toContain("this.remoteClients.isActiveValueVisible(session)");
   });
 
+  it("never asks a provider to archive a conversation it never wrote", () => {
+    // Codex's delete is one call — threadArchive(threadId) — and Codex writes a
+    // thread only once a turn produces something. Deleting an unused session
+    // therefore archived a thread that does not exist, threw, and the host read
+    // the adapter's “Internal error” out to the person. Worse, the attempt left
+    // the row un-sendable afterwards. Reproducible on both adapter providers;
+    // Grok never showed it because its branch removes a directory instead.
+    const body = methodBody("async deleteSession(");
+    const guard = body.indexOf("if (live && !live.hasHistory)");
+    const call = body.indexOf("client.deleteSession(id)");
+    expect(guard).toBeGreaterThan(-1);
+    expect(call).toBeGreaterThan(-1);
+    // The guard has to come FIRST and take the provider call with it.
+    expect(guard).toBeLessThan(call);
+    // Keyed on the session, never on the error TEXT: that message is generic,
+    // and matching it would swallow real failures. (The words appear in the
+    // comment above the guard, which is why this looks for a string test
+    // rather than the words.)
+    expect(body).not.toMatch(/(includes|indexOf|startsWith|test)\(\s*["'`][^"'`]*Internal error/);
+  });
+
   it("says WHY it refused, in the line it writes", () => {
     // The bare version said "owned elsewhere" and could not say by whom. The
     // answer was one field away and it cost an evening of guessing.
@@ -351,28 +372,4 @@ describe("deleting a conversation on a machine nobody sits at", () => {
     expect(line).toContain("requesterWatches=");
   });
 
-  it("closes an adapter session before asking anyone to delete it", () => {
-    // The comment in this method has always said "tear the CLI down BEFORE
-    // touching the disk". The Grok branch did; the adapter branch did the
-    // opposite — it handed live.client its own open session and asked it to
-    // delete that. Codex answered `Internal error`, which the host read out
-    // verbatim to somebody who could not know it meant "close it first".
-    const body = methodBody("async deleteSession(");
-    const dispose = body.indexOf("await this.disposeSession(live)");
-    const del = body.indexOf("temporary.deleteSession(id)");
-    expect(dispose).toBeGreaterThan(-1);
-    expect(del).toBeGreaterThan(-1);
-    expect(dispose).toBeLessThan(del);
-    // Through a FRESH connection, never the live one — that is the whole fix.
-    expect(body).not.toContain("live?.client ?? (temporary");
-  });
-
-  it("awaits the teardown before deleting Grok's files", () => {
-    // A floating promise does not deliver "the process is gone before the
-    // files are", which is what the comment promises and why deleting an open
-    // conversation used to bring it straight back.
-    const body = methodBody("async deleteSession(");
-    expect(body).toContain("await this.disposeSession(live)");
-    expect(body).not.toMatch(/\n\s+if \(live\) this\.disposeSession\(live\);/);
-  });
 });
