@@ -12537,8 +12537,28 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   // No native confirm here: the webview shows its own confirm dialog before
   // posting deleteSession (works in the browser client too, where a host-side
   // modal would stall invisibly).
+  /**
+   * Is somebody OTHER than the asker looking at this conversation?
+   *
+   * `this.focused` is the host's own view. On a desk that is a real second
+   * surface — a VS Code panel or a desktop window with a person at it — and
+   * deleting out from under it is what this protection exists to stop.
+   *
+   * ON A CLOUD MACHINE THERE IS NOBODY AT THAT SCREEN, EVER. The host still
+   * keeps a focused session, so whatever it adopted stayed “owned” for good:
+   * the moment the only real user navigated elsewhere they were told to go
+   * close it “in another tab or the VS Code view” — naming two surfaces that
+   * do not exist there. The owner hit this and said, correctly, that if it
+   * were open anywhere he would have been offered the take-it-back button;
+   * that affordance is driven by REMOTE ownership, so its absence was the
+   * proof that the claimant was this pointer.
+   *
+   * Remote ownership is unchanged: a second phone or tab still protects a
+   * conversation, on cloud exactly as anywhere else.
+   */
   private sessionHasLiveOwner(session: Session): boolean {
-    return session === this.focused || this.remoteClients.isActiveValueVisible(session);
+    const localOwner = session === this.focused && !isCloudEnvironment();
+    return localOwner || this.remoteClients.isActiveValueVisible(session);
   }
 
   private reportProtectedSession(origin: MsgOrigin, clientId: string | undefined, action: "delete" | "clear"): void {
@@ -12644,7 +12664,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         : live === this.focused
     );
     if (live && this.sessionHasLiveOwner(live) && !requesterWatches) {
-      this.host.appendLine(`[sessions] refused delete of live session ${id} owned elsewhere`);
+      // Enough to prove the mechanism from one production line. The bare
+      // version of this cost an evening: five identical refusals that said
+      // “owned elsewhere” and could not say by whom, while the answer — a
+      // local pointer on a machine with no local user — was a field away.
+      // No client ids: who is watching is not something the log needs.
+      this.host.appendLine(
+        `[sessions] refused delete of live session ${id} owned elsewhere`
+        + ` (localFocused=${live === this.focused} cloud=${isCloudEnvironment()}`
+        + ` remoteOwners=${this.remoteClients.clientsForActiveValue(live).length}`
+        + ` requesterWatches=${requesterWatches})`,
+      );
       this.reportProtectedSession(origin, clientId, "delete");
       return;
     }
@@ -12690,15 +12720,32 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         const cliPath = this.locateProvider(provider);
         const backend = this.createProviderBackend(provider);
         if (!cliPath || !backend) throw new Error(`${name} CLI is not available.`);
-        const client = live?.client ?? (temporary = new AcpClient({
+        // TEAR THE LIVE ONE DOWN FIRST, which is what the comment above has
+        // always claimed and what the Grok branch below actually does. This
+        // branch did the opposite: it handed `live.client` its own open
+        // session and asked it to delete that, and the adapter answered
+        // `Internal error` — which the host then read out verbatim to the
+        // person, who had no way to know it meant “close it first”.
+        //
+        // Deleting through a FRESH connection is the same shape clear-all
+        // already uses for cold adapter history, so there is one mechanism
+        // here rather than two.
+        //
+        // The disposal is not conditional on the delete succeeding, and that
+        // is deliberate: this path is only reached when the asker is the one
+        // watching, so closing it is what they asked for. If the delete then
+        // fails the conversation is closed but INTACT on disk — it is still
+        // in history and still openable, which is the honest failure.
+        if (live) await this.disposeSession(live);
+        temporary = new AcpClient({
           cliPath,
           cwd,
           env: { ...process.env },
           backend,
           log: (message) => this.host.appendLine(message),
-        }));
-        if (temporary) await temporary.start();
-        await client.deleteSession(id);
+        });
+        await temporary.start();
+        await temporary.deleteSession(id);
       } catch (error) {
         const text = `${name} refused to delete this conversation: ${(error as Error).message}`;
         this.host.appendLine(`[sessions] ${text}`);
@@ -12711,7 +12758,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         return;
       }
       if (temporary) await temporary.dispose();
-      if (live) this.disposeSession(live);
       const history = this.adapterHistory(provider);
       if (history) {
         for (const [key, entries] of history.cache) {
@@ -12719,7 +12765,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         }
       }
     } else {
-      if (live) this.disposeSession(live);
+      // Awaited: the comment above promises the process is gone before the
+      // files are, and a floating promise does not deliver that. Clear-all
+      // collects and awaits these; this call site did not.
+      if (live) await this.disposeSession(live);
       try {
         deleteSessionDir({
           fs: defaultFs,
@@ -14925,6 +14974,18 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // Recovery declined (already retried this streak, or not auth-shaped):
       // promptErrorText keeps the copy consistent — the entitlement notice for
       // billing-flavored wording (#58), the raw detail otherwise.
+      // A prompt failure reached the transcript and NOTHING reached the log:
+      // the owner sent two messages to a Codex session, saw a bare “Internal
+      // error” twice, and the host had no record either happened. An error we
+      // show a person and cannot ourselves account for is the shape that costs
+      // an evening — the rail's version verdict was the same mistake.
+      //
+      // The session id is what makes it diagnosable: it says whether the
+      // prompt went to the session the person is looking at.
+      this.host.appendLine(
+        `[${session.provider}] prompt failed for session ${session.client?.sessionId ?? session.activeSessionId ?? "none"}`
+        + `: ${errorDetail(e)}`,
+      );
       this.emit(session, { type: "agentError", text: promptErrorText(e) });
       this.noteLiveTurnEnded(session);
       this.setStatus(session, "error");
@@ -15035,6 +15096,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // not a sign-in problem — promptErrorText shows the entitlement notice
         // with the CLI's own actionable advice in chat (#58), never the login
         // overlay, which can't fix it.
+        // Same as the first prompt path: say it out loud. This is the RESEND,
+        // so a failure here means a fresh process hit the same wall.
+        this.host.appendLine(
+          `[${session.provider}] resend failed for session ${session.client?.sessionId ?? session.activeSessionId ?? "none"}`
+          + `: ${errorDetail(e2)}`,
+        );
         this.emit(session, { type: "agentError", text: promptErrorText(e2) });
         this.noteLiveTurnEnded(session);
         this.setStatus(session, "error");

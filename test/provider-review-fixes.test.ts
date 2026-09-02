@@ -319,3 +319,60 @@ describe("multi-provider review regressions", () => {
       .toContain("providerForRequestedModel");
   });
 });
+
+describe("deleting a conversation on a machine nobody sits at", () => {
+  // The owner, on a Cloud machine, could not delete a conversation he had
+  // just navigated away from: "This conversation is open in another tab or
+  // the VS Code view." There is no other tab and no VS Code view there. Five
+  // identical refusals in one evening.
+
+  it("does not let the host's own focus claim a session on a cloud machine", () => {
+    // `this.focused` is a real second surface at a desk and a phantom on a
+    // cloud VM: the host keeps one, nobody is ever looking at it, and it does
+    // not move when the only real user switches conversations. So whatever it
+    // adopted stayed owned for good.
+    const body = methodBody("private sessionHasLiveOwner(");
+    expect(body).toContain("!isCloudEnvironment()");
+    // Remote ownership is untouched — a second phone or tab still protects a
+    // conversation, on cloud exactly as anywhere else.
+    expect(body).toContain("this.remoteClients.isActiveValueVisible(session)");
+  });
+
+  it("says WHY it refused, in the line it writes", () => {
+    // The bare version said "owned elsewhere" and could not say by whom. The
+    // answer was one field away and it cost an evening of guessing.
+    const src = sidebar;
+    const at = src.indexOf("refused delete of live session");
+    expect(at).toBeGreaterThan(-1);
+    const line = src.slice(at, at + 400);
+    expect(line).toContain("localFocused=");
+    expect(line).toContain("cloud=");
+    expect(line).toContain("remoteOwners=");
+    expect(line).toContain("requesterWatches=");
+  });
+
+  it("closes an adapter session before asking anyone to delete it", () => {
+    // The comment in this method has always said "tear the CLI down BEFORE
+    // touching the disk". The Grok branch did; the adapter branch did the
+    // opposite — it handed live.client its own open session and asked it to
+    // delete that. Codex answered `Internal error`, which the host read out
+    // verbatim to somebody who could not know it meant "close it first".
+    const body = methodBody("async deleteSession(");
+    const dispose = body.indexOf("await this.disposeSession(live)");
+    const del = body.indexOf("temporary.deleteSession(id)");
+    expect(dispose).toBeGreaterThan(-1);
+    expect(del).toBeGreaterThan(-1);
+    expect(dispose).toBeLessThan(del);
+    // Through a FRESH connection, never the live one — that is the whole fix.
+    expect(body).not.toContain("live?.client ?? (temporary");
+  });
+
+  it("awaits the teardown before deleting Grok's files", () => {
+    // A floating promise does not deliver "the process is gone before the
+    // files are", which is what the comment promises and why deleting an open
+    // conversation used to bring it straight back.
+    const body = methodBody("async deleteSession(");
+    expect(body).toContain("await this.disposeSession(live)");
+    expect(body).not.toMatch(/\n\s+if \(live\) this\.disposeSession\(live\);/);
+  });
+});
