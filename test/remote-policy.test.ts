@@ -1414,24 +1414,18 @@ describe("capabilities a remote may see", () => {
     expect(seen.uploadFile).toBe(true);
   });
 
-  it("keeps it on a CLOUD machine, where the remote is the only user", () => {
-    // There is no desk to walk to, so withholding it means the action exists
-    // nowhere at all. Same argument that promoted logout in CLOUD_DISPOSITION.
-    const caps = { removeProjectFolder: true } as unknown as
+  it("withholds it on a CLOUD machine too, because Hide there is one-way", () => {
+    // The tempting argument is that a cloud remote is the only user, so it may
+    // as well close a folder. Authority was never the problem. RECOVERY is:
+    // Add project on a phone is Create and Clone, importing an existing folder
+    // needs a picker no remote has, and Create refuses a destination that is
+    // already on disk. A hidden project would be gone from every surface that
+    // person has, under a dialog promising it could be brought back.
+    const caps = { removeProjectFolder: true, uploadFile: true } as unknown as
       Parameters<typeof capabilitiesForRemote>[0];
-    const seen = capabilitiesForRemote(caps, { isCloud: true }) as Record<string, unknown>;
-    expect(seen.removeProjectFolder).toBe(true);
-  });
-
-  it("still strips desk-only capabilities on a cloud machine", () => {
-    // isCloud lifts ONE list, not the other. A cloud host has no editor to
-    // reveal a file in and no in-app preview window either.
-    const caps = { showInFolder: true, previewInApp: true, removeProjectFolder: true } as unknown as
-      Parameters<typeof capabilitiesForRemote>[0];
-    const seen = capabilitiesForRemote(caps, { isCloud: true }) as Record<string, unknown>;
-    for (const key of DESK_ONLY_CAPABILITIES) {
-      expect(seen, `${key} must not reach a remote, cloud or not`).not.toHaveProperty(key);
-    }
+    const seen = capabilitiesForRemote(caps) as Record<string, unknown>;
+    expect(seen).not.toHaveProperty("removeProjectFolder");
+    expect(seen.uploadFile).toBe(true);
   });
 });
 
@@ -1462,13 +1456,16 @@ describe("a cloud environment is its own desk", () => {
     // signing an agent OUT, re-observing the accounts (the promotion that makes
     // a sign-in stick), and the two General preferences about this machine
     // which were otherwise read-only forever (owner, 2026-08-31).
-    // removeProjectFolder joined them in 4.1.2. Hide project was drawn on a
-    // cloud machine and dropped in silence: host-local is the right answer for
-    // a remote rearranging somebody's editor, and the wrong one where the
-    // remote is the only user there will ever be.
+    // removeProjectFolder joined these during 4.1.2 and was taken back out
+    // before release. "The remote is the only user" establishes AUTHORITY and
+    // says nothing about whether the act can be undone: on a cloud machine Add
+    // project is Create and Clone only, importing an existing folder needs a
+    // native picker no remote has, and Create refuses a destination that
+    // already exists — so Hide there was one-way, under a confirmation that
+    // promised otherwise. Reversible put-away is the archive feature, not a
+    // disposition override.
     expect([...promoted].sort()).toEqual([
-      "logout", "refreshProviders", "removeProjectFolder", "setTelemetryEnabled",
-      "setThumbsFeedback",
+      "logout", "refreshProviders", "setTelemetryEnabled", "setThumbsFeedback",
     ]);
   });
 });

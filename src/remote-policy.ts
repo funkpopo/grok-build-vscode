@@ -641,12 +641,7 @@ const TIER_RANK: Record<RemoteTier, number> = { "read-only": 0, propose: 1, full
  */
 const CLOUD_DISPOSITION: Partial<Record<WebviewMsg["type"], InboundDisposition>> = {
   logout: "full",
-  // Putting a project away is host-local on a desk because a phone should not
-  // rearrange somebody's editor. On a cloud machine there is no editor and no
-  // desk: the remote is the ONLY user, and withholding this left a menu item
-  // that rendered, posted and vanished. Authority, not safety — the
-  // confirmation and the cwd gate below are what make it safe.
-  removeProjectFolder: "full",
+
   // Re-observing the accounts is host-local on a desk because a phone should
   // not be able to spawn CLI probes on somebody's laptop. On a cloud machine
   // the remote is the ONLY user, and withholding it meant the promotion that
@@ -798,18 +793,19 @@ export function repoScopeFor(
  * messages these unlock. Capabilities a remote genuinely needs — the file
  * browser, for one — must NOT be listed here.
  */
-/**
- * Desk-only for a remote driving somebody's machine, but legitimate on a
- * cloud one, where the remote is the only user there will ever be. Same
- * argument as {@link CLOUD_DISPOSITION}, applied to what the client is even
- * shown: a control that cannot work must not be drawn.
- */
-export const CLOUD_ONLY_REMOTE_CAPABILITIES = [
-  "removeProjectFolder",
-] as const satisfies ReadonlyArray<keyof HostUiCapabilities>;
-
 export const DESK_ONLY_CAPABILITIES = [
   "servesMediaRanges",
+  // Hiding a project is desk-only, and 4.1.2 briefly made it a cloud
+  // capability before an independent review showed what that costs: on a
+  // cloud machine Add project is Create and Clone only — importing an
+  // existing folder needs the native picker, which no remote has — and
+  // Create refuses a destination that already exists. So Hide there was
+  // one-way, from the only surface that person has, under a confirmation
+  // that promised Add project would bring it back. Withholding the
+  // capability is what stops the control being drawn at all; reversible
+  // put-away belongs to the archive model, which is a feature and not an
+  // override (see the backlog entry).
+  "removeProjectFolder",
   "showInFolder",
   "previewInApp",
   "settingsEditor",
@@ -818,13 +814,9 @@ export const DESK_ONLY_CAPABILITIES = [
 /** `capabilities` as a remote may see them. Pure; see DESK_ONLY_CAPABILITIES. */
 export function capabilitiesForRemote(
   capabilities: HostUiCapabilities,
-  opts: { isCloud?: boolean } = {},
 ): HostUiCapabilities {
   const out = { ...capabilities };
   for (const key of DESK_ONLY_CAPABILITIES) delete out[key];
-  if (!opts.isCloud) {
-    for (const key of CLOUD_ONLY_REMOTE_CAPABILITIES) delete out[key];
-  }
   return out;
 }
 

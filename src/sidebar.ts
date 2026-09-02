@@ -15529,12 +15529,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       );
     }
     if (message.type !== "initialState") return message;
-    return {
-      ...message,
-      capabilities: capabilitiesForRemote(message.capabilities, {
-        isCloud: isCloudEnvironment(),
-      }),
-    };
+    return { ...message, capabilities: capabilitiesForRemote(message.capabilities) };
   }
 
   /** Target one opaque relay clientId. */
