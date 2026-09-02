@@ -121,32 +121,6 @@ export class Session {
   /** This session has conversational history (vs. a fresh, empty one). */
   hasHistory = false;
 
-  /**
-   * The provider has produced output on THIS session id, so a thread exists
-   * for it to forget.
-   *
-   * Deliberately not `hasHistory`, which means “the person can see a
-   * conversation here”. The two diverge on a SUPPRESSED turn: Summarize &
-   * Restart mints a fresh id and feeds it the old summary with
-   * `suppressContent`, so the provider writes a real thread while the row
-   * still reads “New session”. Anything keyed on emptiness to skip provider
-   * cleanup has to ask this instead, or it orphans that thread.
-   *
-   * Set from the provider's own output events, never from the call site.
-   * Both guesses at the call site are wrong in opposite directions, and both
-   * were shipped: setting it before the await makes a prompt that FAILED
-   * look written (delete then asks a provider to archive nothing — the
-   * “Internal error” that leaves a row un-sendable), and setting it after
-   * makes a turn deleted MID-FLIGHT look unwritten (delete skips the
-   * provider and strands the thread). Output arriving is the event both
-   * guesses were trying to approximate.
-   *
-   * Not `historyEventCount > 0`: that counter is recomputed from a possibly
-   * truncated buffer, so a compaction can take it back to zero while the
-   * thread is still there.
-   */
-  providerWrote = false;
-
   /** True for the session-start window (spawn → newSession/load). Model/effort
    * changes that would race startup are ignored; the webview also locks busy. */
   priming = false;

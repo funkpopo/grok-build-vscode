@@ -8937,7 +8937,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     session.autoApprove = rememberedYolo || configAutoApprove;
     session.planActive = false;
     session.hasHistory = false;
-    session.providerWrote = false;
     session.suppressContent = false;
     session.captureAgentText = undefined;
     session.lastSessionInfoAt = 0;
@@ -9220,7 +9219,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         return;
       }
       session.inUserMessage = false;
-      session.providerWrote = true;
       session.historyEventCount += 1;
       this.emit(session, { type: "messageChunk", text });
       this.noteAdapterCompactSignal(session, text);
@@ -9288,7 +9286,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     client.on("thoughtChunk", (text: string) => {
       if (gen !== session.gen) return;
       session.inUserMessage = false;
-      session.providerWrote = true;
       session.historyEventCount += 1;
       this.emit(session, { type: "thoughtChunk", text });
     });
@@ -9350,7 +9347,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const emitToolCallEvent = (type: "toolCall" | "toolCallUpdate", u: unknown) => {
       const prepared = prepareMcpToolCall(u, mcpState);
       session.inUserMessage = false;
-      session.providerWrote = true;
       session.historyEventCount += 1;
       this.emit(session, { type, call: prepared.call });
       this.noteAdapterCompactSignal(session, prepared.call);
@@ -12718,80 +12714,66 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // is nothing left that could write them again.
     const wasFocused = !!live && live === this.focused;
     if (isAdapterProvider(provider)) {
-      // A CONVERSATION THE PROVIDER NEVER WROTE HAS NOTHING TO ARCHIVE.
+      // A FAILED DELETE MUST STILL REMOVE THE ROW.
       //
-      // Codex implements delete as exactly one call —
-      //   async deleteSession(id) { await codexClient.threadArchive({ threadId: id }); }
-      // — and Codex writes a thread only once a turn has produced something. So
-      // deleting a conversation nobody has used yet asks it to archive a thread
-      // that does not exist, it throws, and the host repeated the adapter's own
-      // words to the person: “Internal error”. Claude behaves the same way.
-      // Reproducible every time: new session, delete while open, both providers.
-      // Grok never showed it because its branch removes a DIRECTORY, and a
-      // missing directory is harmless — that asymmetry is what named the cause.
+      // Codex implements delete as one `threadArchive(threadId)` and Claude's
+      // removes a session file, and BOTH throw when the thread was never
+      // written — which is every conversation nobody has used yet. The host
+      // then read the adapter's own words out to the person (“Internal
+      // error”) and, far worse, returned before its own cleanup, so a failed
+      // delete was how a conversation became permanently un-sendable.
       //
-      // Worse than the error: the attempt left the row unusable afterwards, so a
-      // failed delete was how a conversation became permanently un-sendable.
+      // Three attempts tried to PREDICT whether a thread existed and skip the
+      // provider when it did not — keyed on `hasHistory`, then on a flag set
+      // at the prompt call site, then on one set from provider output. Each
+      // was wrong in a different direction, because persistence happens
+      // inside the provider at a moment the host cannot observe: a suppressed
+      // Summarize & Restart turn writes a thread the row calls empty, a
+      // prompt that throws may or may not have written, and the user turn
+      // persists before any agent output arrives. Skipping wrongly ORPHANS a
+      // real thread; calling wrongly is the original bug. There is no signal
+      // here that separates them, so this no longer guesses.
       //
-      // Keyed on the session's own flags, never on the shape of an error string:
-      // `Internal error` is generic, and treating it as “not found” would swallow
-      // real failures. A cold or used conversation still goes to the provider,
-      // which is the only thing that can forget it.
-      //
-      // `hasHistory` alone is NOT the question, and an independent review caught
-      // that: Summarize & Restart mints a fresh id and feeds it the old summary
-      // under `suppressContent`, so the provider has written a thread while the
-      // row still reads “New session” and `hasHistory` is still false. Skipping
-      // the provider there would orphan that thread — invisible to the person,
-      // and resurrectable as a row by the next listing refresh.
-      //
-      // So ask the provider's own output instead. Both directions are real
-      // failures — skipping cleanup on a thread that exists orphans it, and
-      // asking for cleanup on one that does not is the bug this guard removes.
-      if (live && !live.hasHistory && !live.providerWrote) {
+      // Ask the provider every time, and treat a refusal as done: for the
+      // overwhelmingly common cause — nothing there to delete — that is the
+      // truth, and for a genuine provider failure the row returns on the next
+      // listing refresh, which is visible and recoverable. Neither outcome
+      // loses anything the person wrote. A dead row is worse than both.
+      let temporary: AcpClient | undefined;
+      const name = providerDisplayName(provider);
+      try {
+        const cliPath = this.locateProvider(provider);
+        const backend = this.createProviderBackend(provider);
+        if (!cliPath || !backend) throw new Error(`${name} CLI is not available.`);
+        // DISPOSING FIRST WAS TRIED HERE AND REVERTED. It looks obviously
+        // right — the comment above asks for it and the Grok branch does it —
+        // but tearing the live session down before the delete leaves it
+        // unbound and still `this.focused` for the seconds a fresh CLI needs
+        // to spawn, initialize and delete. In that window: a reconnect
+        // re-opens the conversation onto the zombie focus and a second
+        // process starts on the same id; or the person opens another
+        // conversation and the finishing delete moves them onto a blank
+        // session, so their next message goes somewhere they did not choose.
+      // Independent review found all three. The defect was the RECOVERY
+      // below, which used to return before our own cleanup; it no longer does.
+        const client = live?.client ?? (temporary = new AcpClient({
+          cliPath,
+          cwd,
+          env: { ...process.env },
+          backend,
+          log: (message) => this.host.appendLine(message),
+        }));
+        if (temporary) await temporary.start();
+        await client.deleteSession(id);
+      } catch (error) {
+        // Logged, never raised: the usual cause is a thread that was never
+        // written, where an error would be a lie about the person's own
+        // system. Falling through is the point — the row goes either way.
         this.host.appendLine(
-          `[${provider}] removed empty session ${id} locally: never persisted, nothing to archive`,
+          `[sessions] ${name} could not delete ${id}, removing it locally: ${(error as Error).message}`,
         );
-      } else {
-        let temporary: AcpClient | undefined;
-        const name = providerDisplayName(provider);
-        try {
-          const cliPath = this.locateProvider(provider);
-          const backend = this.createProviderBackend(provider);
-          if (!cliPath || !backend) throw new Error(`${name} CLI is not available.`);
-          // DISPOSING FIRST WAS TRIED HERE AND REVERTED. It looks obviously
-          // right — the comment above asks for it and the Grok branch does it —
-          // but tearing the live session down before the delete leaves it
-          // unbound and still `this.focused` for the seconds a fresh CLI needs
-          // to spawn, initialize and delete. In that window: a reconnect
-          // re-opens the conversation onto the zombie focus and a second
-          // process starts on the same id; or the person opens another
-          // conversation and the finishing delete moves them onto a blank
-          // session, so their next message goes somewhere they did not choose.
-          // Independent review found all three. The real defect is the RECOVERY
-          // below, not the order here.
-          const client = live?.client ?? (temporary = new AcpClient({
-            cliPath,
-            cwd,
-            env: { ...process.env },
-            backend,
-            log: (message) => this.host.appendLine(message),
-          }));
-          if (temporary) await temporary.start();
-          await client.deleteSession(id);
-        } catch (error) {
-          const text = `${name} refused to delete this conversation: ${(error as Error).message}`;
-          this.host.appendLine(`[sessions] ${text}`);
-          if (origin === "remote" && clientId) this.sendRemoteClient(clientId, { type: "error", text });
-          else {
-            this.post({ type: "error", text });
-            void this.host.showErrorMessage(text);
-          }
-          if (temporary) await temporary.dispose();
-          return;
-        }
-        if (temporary) await temporary.dispose();
       }
+      if (temporary) await temporary.dispose();
       if (live) this.disposeSession(live);
       const history = this.adapterHistory(provider);
       if (history) {

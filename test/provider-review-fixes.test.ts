@@ -338,56 +338,44 @@ describe("deleting a conversation on a machine nobody sits at", () => {
     expect(body).toContain("this.remoteClients.isActiveValueVisible(session)");
   });
 
-  it("never asks a provider to archive a conversation it never wrote", () => {
-    // Codex's delete is one call — threadArchive(threadId) — and Codex writes a
-    // thread only once a turn produces something. Deleting an unused session
-    // therefore archived a thread that does not exist, threw, and the host read
-    // the adapter's “Internal error” out to the person. Worse, the attempt left
-    // the row un-sendable afterwards. Reproducible on both adapter providers;
-    // Grok never showed it because its branch removes a directory instead.
+  it("removes the row even when the provider refuses the delete", () => {
+    // Codex deletes with one `threadArchive(threadId)` and Claude removes a
+    // session file; BOTH throw when the thread was never written, which is
+    // every conversation nobody has used yet. The error was the visible half.
+    // The damaging half was the `return` after it: the host abandoned its own
+    // cleanup, so a failed delete left a row that could never be sent to.
     const body = methodBody("async deleteSession(");
-    const guard = body.indexOf("if (live && !live.hasHistory && !live.providerWrote)");
     const call = body.indexOf("client.deleteSession(id)");
-    expect(guard).toBeGreaterThan(-1);
+    const cleanup = body.indexOf("if (live) this.disposeSession(live);");
     expect(call).toBeGreaterThan(-1);
-    // The guard has to come FIRST and take the provider call with it.
-    expect(guard).toBeLessThan(call);
-    // Keyed on the session, never on the error TEXT: that message is generic,
-    // and matching it would swallow real failures. (The words appear in the
-    // comment above the guard, which is why this looks for a string test
-    // rather than the words.)
-    expect(body).not.toMatch(/(includes|indexOf|startsWith|test)\(\s*["'`][^"'`]*Internal error/);
+    expect(cleanup).toBeGreaterThan(call);
+    // No early exit between the provider call and our cleanup.
+    expect(body.slice(call, cleanup)).not.toContain("return;");
   });
 
-  it("learns a thread exists from the provider, not from the call site", () => {
-    // The trap the guard walks into if it asks `hasHistory` alone: Summarize
-    // & Restart mints a fresh id and feeds it the previous summary under
-    // `suppressContent`, so the provider writes a real thread while the row
-    // still reads “New session”. Deleting then stranded that thread.
-    //
-    // Setting a flag AT the prompt is wrong in both directions, and both were
-    // written before this landed: before the await, a prompt that FAILED
-    // looks written and delete asks the provider to archive nothing (the
-    // “Internal error” that leaves a row un-sendable); after it, a turn
-    // deleted mid-flight looks unwritten and delete strands the thread.
-    // Output ARRIVING is the event both guesses were approximating.
-    const marked = sidebar.split("session.providerWrote = true;").length - 1;
-    const paired = sidebar.split(
-      ["session.providerWrote = true;", "      session.historyEventCount += 1;"].join("\n"),
-    ).length - 1;
-    // Every set sits on a provider output event, and there are no others.
-    expect(paired).toBe(3);
-    expect(marked).toBe(paired);
-    // Emphatically NOT at the prompt sites.
-    expect(methodBody("private async restartSession(")).not.toContain("providerWrote");
+  it("does not tell the person their own system failed", () => {
+    // The overwhelmingly common cause is a thread that was never there, so
+    // the refusal is not news — it is the delete succeeding by another name.
+    // A genuine provider failure returns the row on the next listing refresh,
+    // which is visible and recoverable; neither outcome loses written work.
+    const body = methodBody("async deleteSession(");
+    const at = body.indexOf("could not delete");
+    expect(at).toBeGreaterThan(-1);
+    const adapterHalf = body.slice(0, body.indexOf("deleteSessionDir("));
+    expect(adapterHalf).not.toContain("refused to delete this conversation");
+    expect(adapterHalf).not.toContain("showErrorMessage");
   });
 
-  it("clears the written flag when a session id is replaced", () => {
-    // Same `Session` object, new id: whatever the provider wrote belongs to
-    // the OLD id. Without this reset the flag is sticky and every later
-    // empty session goes back to the provider — the original bug returns.
-    const body = methodBody("private async startSessionBody(");
-    expect(body).toContain("session.providerWrote = false;");
+  it("stopped predicting whether the provider has a thread", () => {
+    // Three attempts guessed and each was wrong in a different direction:
+    // `hasHistory` (a suppressed Summarize & Restart turn writes a thread the
+    // row calls empty), a flag set at the prompt call site (a prompt that
+    // THREW still looked written), and one set from provider output (the user
+    // turn persists before any agent output arrives). Guessing wrong one way
+    // orphans a real thread; the other way is the original bug. The host
+    // cannot see the moment a provider persists, so it no longer tries.
+    expect(sidebar).not.toContain("providerWrote");
+    expect(sidebar).not.toContain("providerPrompted");
   });
 
   it("says WHY it refused, in the line it writes", () => {
