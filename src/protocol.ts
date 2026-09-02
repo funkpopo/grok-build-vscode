@@ -253,6 +253,12 @@ export type HostUiCapabilities = {
    * and VS Code deliberately does not — its workspace is VS Code's to manage.
    */
   addProjectFolder?: boolean;
+  /** May this surface take a project back OUT of the list?
+   *  Separate from addProjectFolder on purpose: that one answers "is the
+   *  native picker here", which is false on every remote, and Hide rode on it
+   *  until create/clone made it true on remotes and produced a control that
+   *  rendered, posted, and was dropped in silence. */
+  removeProjectFolder?: boolean;
   /**
    * Add project can also MAKE one: a typed name becomes a folder in the host's
    * project root. OPT-IN — absent/false means the menu offers only the folder

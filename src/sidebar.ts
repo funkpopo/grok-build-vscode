@@ -15159,6 +15159,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // flags and keeps offering only the picker.
         createProject: this.canAddProjectFolder(),
         cloneProject: this.canAddProjectFolder(),
+        // The same ownership argument as addProjectFolder — a host that owns
+        // its folder set can drop one — but a SEPARATE flag, because the
+        // reach differs: capabilitiesForRemote withholds this from a remote
+        // driving a desk and keeps it on a cloud machine, where there is no
+        // desk to walk to.
+        removeProjectFolder: this.canAddProjectFolder(),
       },
     };
   }
@@ -15475,7 +15481,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    *  is testable without standing up a sidebar. */
   private messageForRemote(message: HostMsg): HostMsg {
     if (message.type !== "initialState") return message;
-    return { ...message, capabilities: capabilitiesForRemote(message.capabilities) };
+    return {
+      ...message,
+      capabilities: capabilitiesForRemote(message.capabilities, {
+        isCloud: isCloudEnvironment(),
+      }),
+    };
   }
 
   /** Target one opaque relay clientId. */

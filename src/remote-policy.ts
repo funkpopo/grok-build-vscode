@@ -641,6 +641,12 @@ const TIER_RANK: Record<RemoteTier, number> = { "read-only": 0, propose: 1, full
  */
 const CLOUD_DISPOSITION: Partial<Record<WebviewMsg["type"], InboundDisposition>> = {
   logout: "full",
+  // Putting a project away is host-local on a desk because a phone should not
+  // rearrange somebody's editor. On a cloud machine there is no editor and no
+  // desk: the remote is the ONLY user, and withholding this left a menu item
+  // that rendered, posted and vanished. Authority, not safety — the
+  // confirmation and the cwd gate below are what make it safe.
+  removeProjectFolder: "full",
   // Re-observing the accounts is host-local on a desk because a phone should
   // not be able to spawn CLI probes on somebody's laptop. On a cloud machine
   // the remote is the ONLY user, and withholding it meant the promotion that
@@ -710,6 +716,19 @@ export function allowRemoteRepoTarget(msg: WebviewMsg, isKnownCwd: (cwd: string)
     // that is not named here is one refactor away from being trusted.
     case "newSession":
       return !msg.cwd || isKnownCwd(msg.cwd);
+    // Admitted from a remote on cloud (CLOUD_DISPOSITION), so it MUST be named
+    // here. The comment on newSession above is the whole reason: the default
+    // branch returns true, and a cwd-bearing message that is not listed is one
+    // refactor away from being trusted. The host bounds the path too; this is
+    // the explicit catalog gate every admitted cwd goes through.
+    case "removeProjectFolder":
+      // NOT the `!msg.cwd || isKnownCwd(...)` shape used above, and the
+      // difference matters: an absent cwd is harmless for newSession, but the
+      // host resolves this one as `cwd || workspaceRoot()`, so a bare frame
+      // would close whatever the machine currently has open — catalog gate and
+      // all. A remote must NAME a project the catalog already knows. The empty
+      // string falls back the same way, so it is refused too.
+      return !!msg.cwd && isKnownCwd(msg.cwd);
     default:
       return true;
   }
@@ -779,6 +798,16 @@ export function repoScopeFor(
  * messages these unlock. Capabilities a remote genuinely needs — the file
  * browser, for one — must NOT be listed here.
  */
+/**
+ * Desk-only for a remote driving somebody's machine, but legitimate on a
+ * cloud one, where the remote is the only user there will ever be. Same
+ * argument as {@link CLOUD_DISPOSITION}, applied to what the client is even
+ * shown: a control that cannot work must not be drawn.
+ */
+export const CLOUD_ONLY_REMOTE_CAPABILITIES = [
+  "removeProjectFolder",
+] as const satisfies ReadonlyArray<keyof HostUiCapabilities>;
+
 export const DESK_ONLY_CAPABILITIES = [
   "servesMediaRanges",
   "showInFolder",
@@ -789,9 +818,13 @@ export const DESK_ONLY_CAPABILITIES = [
 /** `capabilities` as a remote may see them. Pure; see DESK_ONLY_CAPABILITIES. */
 export function capabilitiesForRemote(
   capabilities: HostUiCapabilities,
+  opts: { isCloud?: boolean } = {},
 ): HostUiCapabilities {
   const out = { ...capabilities };
   for (const key of DESK_ONLY_CAPABILITIES) delete out[key];
+  if (!opts.isCloud) {
+    for (const key of CLOUD_ONLY_REMOTE_CAPABILITIES) delete out[key];
+  }
   return out;
 }
 

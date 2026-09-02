@@ -1368,6 +1368,37 @@ describe("capabilities a remote may see", () => {
     // The host keeps serving its LOCAL webview from this same object.
     expect(original).toHaveProperty("showInFolder");
   });
+
+  it("withholds removing a project from a remote driving a DESK", () => {
+    // A phone must not rearrange the projects on somebody's laptop. Drawing
+    // the control there is the bug this whole change is about: it rendered,
+    // posted, and was dropped in silence.
+    const caps = { removeProjectFolder: true, uploadFile: true } as unknown as
+      Parameters<typeof capabilitiesForRemote>[0];
+    const seen = capabilitiesForRemote(caps) as Record<string, unknown>;
+    expect(seen).not.toHaveProperty("removeProjectFolder");
+    expect(seen.uploadFile).toBe(true);
+  });
+
+  it("keeps it on a CLOUD machine, where the remote is the only user", () => {
+    // There is no desk to walk to, so withholding it means the action exists
+    // nowhere at all. Same argument that promoted logout in CLOUD_DISPOSITION.
+    const caps = { removeProjectFolder: true } as unknown as
+      Parameters<typeof capabilitiesForRemote>[0];
+    const seen = capabilitiesForRemote(caps, { isCloud: true }) as Record<string, unknown>;
+    expect(seen.removeProjectFolder).toBe(true);
+  });
+
+  it("still strips desk-only capabilities on a cloud machine", () => {
+    // isCloud lifts ONE list, not the other. A cloud host has no editor to
+    // reveal a file in and no in-app preview window either.
+    const caps = { showInFolder: true, previewInApp: true, removeProjectFolder: true } as unknown as
+      Parameters<typeof capabilitiesForRemote>[0];
+    const seen = capabilitiesForRemote(caps, { isCloud: true }) as Record<string, unknown>;
+    for (const key of DESK_ONLY_CAPABILITIES) {
+      expect(seen, `${key} must not reach a remote, cloud or not`).not.toHaveProperty(key);
+    }
+  });
 });
 
 describe("a cloud environment is its own desk", () => {
@@ -1397,8 +1428,13 @@ describe("a cloud environment is its own desk", () => {
     // signing an agent OUT, re-observing the accounts (the promotion that makes
     // a sign-in stick), and the two General preferences about this machine
     // which were otherwise read-only forever (owner, 2026-08-31).
+    // removeProjectFolder joined them in 4.1.2. Hide project was drawn on a
+    // cloud machine and dropped in silence: host-local is the right answer for
+    // a remote rearranging somebody's editor, and the wrong one where the
+    // remote is the only user there will ever be.
     expect([...promoted].sort()).toEqual([
-      "logout", "refreshProviders", "setTelemetryEnabled", "setThumbsFeedback",
+      "logout", "refreshProviders", "removeProjectFolder", "setTelemetryEnabled",
+      "setThumbsFeedback",
     ]);
   });
 });

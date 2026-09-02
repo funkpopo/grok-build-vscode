@@ -2490,18 +2490,25 @@ describe("rail overflow menus toggle", () => {
     expect(chip().disabled).toBe(false);
   });
 
-  it("offers Hide project only where the host can close folders", () => {
+  it("offers Hide project only where the host can close folders", async () => {
     // Desktop's rail IS the open-folder set, so putting a project away means
-    // closing it. The browser client has no business closing folders on the
-    // machine it is borrowing, and gates on the same capability as the "+" that
-    // adds them.
+    // closing it.
+    //
+    // It gates on its OWN capability since 4.1.2, not on the "+" that adds
+    // projects. Those agreed only while "+" meant the native picker, which no
+    // remote has; once create and clone shipped as remote-capable ways in, the
+    // shared gate started answering true on a phone and Hide came with it —
+    // drawn, posted, and dropped by remote-policy without a word.
     const h = bootWebview({ beforeScripts: withRail });
     dispatch(h.window, {
       type: "initialState",
       effort: "medium", cwd: "/work/alpha", useCtrlEnter: false, extVersion: "0",
       showThinking: true, expandCommandOutputs: false, steerByDefault: false,
       soundNotifications: false, processingSound: false, readRepliesAloud: false,
-      capabilities: { uploadFile: true, remoteVoice: false, addProjectFolder: true },
+      capabilities: {
+        uploadFile: true, remoteVoice: false,
+        addProjectFolder: true, removeProjectFolder: true,
+      },
     });
     dispatch(h.window, { type: "repos", entries: repos, selectedCwd: "/work/alpha", activeCwd: "/work/alpha" });
 
@@ -2509,6 +2516,12 @@ describe("rail overflow menus toggle", () => {
     const hide = menuItem(openMenu(h.window, beta), "Hide project");
     expect(hide).toBeTruthy();
     click(h.window, hide as HTMLElement);
+    // It ASKS now, like the VS Code rail always has. Nothing is posted on the
+    // click alone — the row leaves every linked device at once, and one
+    // surface guarding that gesture while the other did not was the drift.
+    expect(h.posted.filter((p) => p.type === "removeProjectFolder")).toEqual([]);
+    click(h.window, h.doc.querySelector(".confirm-btn.confirm-primary") as HTMLElement);
+    await Promise.resolve();
     expect(h.posted.filter((p) => p.type === "removeProjectFolder"))
       .toEqual([{ type: "removeProjectFolder", cwd: "/work/beta" }]);
 
