@@ -6903,7 +6903,11 @@ Only continue if you trust this code.`,
    * remote ownership on that cwd is released, and image handles under it are
    * dropped. Closing the last folder leaves an empty rail (no re-seed).
    */
-  async removeProjectFolder(cwd?: string): Promise<void> {
+  async removeProjectFolder(
+    cwd?: string,
+    origin: MsgOrigin = "local",
+    clientId?: string,
+  ): Promise<void> {
     if (!this.host.canSwitchWorkspaceFolder) {
       // VS Code: the only thing there is to remove is a folder the user ADDED
       // by hand. Everything else in the catalog is there because Grok has run
@@ -6921,6 +6925,25 @@ Only continue if you trust this code.`,
     // silently. Ask first. The revoke recomputes its own list at use time, so
     // nothing here goes stale across the await.
     const working = this.sessionsBoundToFolder(target).filter(sessionHasWorkInFlight);
+    if (working.length && origin === "remote") {
+      // A REMOTE cannot answer a native modal, and on a cloud machine there is
+      // nobody at the screen it would open on: the host would wait for a click
+      // that can never come, and the browser would sit there having been told
+      // nothing. That is the exact silence this release exists to remove, so it
+      // must not come back through the door the same release opened.
+      //
+      // Refused rather than assumed. The browser's own confirmation asks a
+      // DIFFERENT question — it says nothing is deleted and the folder stays on
+      // disk — so it is not consent to end a turn in progress and throw the work
+      // away. Stopping the turn is one tap, and it is the user's call to make.
+      const many = working.length > 1;
+      const text = `“${path.basename(target)}” still has `
+        + `${many ? `${working.length} conversations` : "a conversation"} working. `
+        + `Hiding it would end ${many ? "them" : "it"} and discard the turn in `
+        + "progress. Stop it first, then hide the project.";
+      if (clientId) this.sendRemoteClient(clientId, { type: "error", text });
+      return;
+    }
     if (working.length) {
       const many = working.length > 1;
       const ok = await this.host.showWarningMessage(
@@ -10547,11 +10570,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         await this.addProjectFolder();
         break;
       case "removeProjectFolder":
-        // host-local by policy, so `origin` is always local here. A path the
-        // renderer names is not trusted on its own either: the host's
-        // removeWorkspaceFolder returns false for anything not in the open set,
-        // and this reports that rather than acting on it.
-        await this.removeProjectFolder(msg.cwd);
+        // NO LONGER always local: CLOUD_DISPOSITION admits this from a remote on
+        // a cloud machine, where there is no desk to walk to. A path the renderer
+        // names is still not trusted on its own — allowRemoteRepoTarget requires a
+        // cwd the catalog knows, and removeWorkspaceFolder returns false for
+        // anything not in the open set.
+        await this.removeProjectFolder(msg.cwd, origin, clientId);
         break;
       case "createProject":
         await this.createProject(msg.name, origin, clientId);
