@@ -1,5 +1,21 @@
 # Changelog
 
+## 4.1.2 — 2026-09-02
+
+**Things that quietly did nothing now do something, or say why.** A click on a sleeping cloud machine, a Clone that vanished, a Hide that was never going to work, a project telling you to update software that was already current — four different silences, one release.
+
+### Fixed
+
+- **A click wakes a sleeping cloud machine.** Two things woke one: attaching a browser, and the connection dropping while you were marked present. Presence lapses while you READ — reading is not interacting — so if you came back to the page and clicked, nothing was going to wake anything, and the click bounced into silence. Refreshing cured it only because attaching is a wake trigger and clicking was not. A send that finds no machine now wakes it: the send is the strongest evidence there is that somebody wants it.
+
+- **A control action that cannot be delivered says so.** Clone, Hide, rename, delete, new session and the rest were posted and, if the connection was between sockets, discarded without a word — no progress, no error, nothing. They now either reach your machine or tell you they did not, once, with nothing changed. They are deliberately not queued for later: a clone that lands minutes afterwards moves the tab of somebody who has since gone elsewhere.
+
+- **A project's conversations stop accusing your installation of being out of date.** One project could show “Sessions need a newer Grok Build” on a host running the newest release; reloading did not help and opening the project cured it. The message was never a version check — it was an eight-second silence being turned into a claim about your software. Underneath were two real faults: on a page with a remembered conversation the request never left the browser at all, and a preview whose entries included a worktree was thrown away whole on the way back. Both are fixed, the request always gets an answer, and silence now reads as “couldn't load these” with a Retry.
+
+- **“Hide project” is no longer offered where it cannot work.** On a phone or a cloud machine the menu item drew, posted, and was refused by the host in silence. It was gated on the capability for ADDING a project, which stopped meaning what it said once creating and cloning became things a browser could do. It now asks for the capability it actually needs, and confirms before it acts — the editor's rail always did, the chat rail did not.
+
+- **Host names in error messages.** Four places said “open VS Code on that machine” for a host that may be Cursor, Antigravity, Grok Build Desktop, or a cloud machine with no editor anywhere near it.
+
 ## 4.1.1 — 2026-09-02
 
 **A clone that lands where you are standing, and one icon scale you can read.** Cloning a private repository from a phone worked and then left the tab looking at the project it started from — the files were there, just not on the screen that had asked for them. And the icons on that screen came in several sizes depending on which panel they happened to belong to. Both are settled here, along with the rail's own small dishonesties.
