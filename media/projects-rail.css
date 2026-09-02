@@ -298,13 +298,18 @@ html, body {
 .rail-twisty[data-repo-color="coral"] { color: var(--repo-color-coral); }
 .rail-twisty[data-repo-color="purple"] { color: var(--repo-color-purple); }
 
-.rail-action-btn { width: 25px; height: 27px; cursor: pointer; }
+/* VS CODE TIER: 24x24 box, 14px glyph. Deliberately tighter than Desktop and
+   Remote — a VS Code sidebar is meant to be dense, and the file panel is
+   desktop-only (sidebar.ts: "the shared file-panel asset is desktop-only"), so
+   nothing sits beside this rail to disagree with it. A 24px button also fits
+   the 24px row without growing it. */
+.rail-action-btn { width: 24px; height: 24px; cursor: pointer; }
 .rail-action-btn:hover,
 .rail-action-btn.active { color: var(--vscode-foreground); background: transparent; }
 .rail-action-btn:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: -1px; }
 .rail-action-btn:disabled { opacity: .35; pointer-events: none; cursor: default; }
 .rail-twisty svg,
-.rail-action-btn svg { width: 13px; height: 13px; }
+.rail-action-btn svg { width: 14px; height: 14px; }
 .rail-twisty svg { width: var(--rail-icon-size); height: var(--rail-icon-size); }
 
 .rail-repo-name {
@@ -492,8 +497,8 @@ html, body {
 }
 
 .rail-pinned { margin-bottom: 2px; }
-.rail-session-actions .rail-action-btn { width: 25px; height: 24px; }
-.rail-session-actions .rail-action-btn svg { width: 12px; height: 12px; }
+.rail-session-actions .rail-action-btn { width: 24px; height: 24px; }
+.rail-session-actions .rail-action-btn svg { width: 14px; height: 14px; }
 
 .rail-more {
   align-self: flex-start;
