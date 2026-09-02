@@ -8646,6 +8646,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.emit(session, { type: "sessionContext" });
       session.suppressContent = true;
       try {
+        session.providerPrompted = true;
         await session.client.prompt(`[Context from previous session]\n${summary}`);
       } catch { /* best effort */ } finally {
         session.suppressContent = false;
@@ -8937,6 +8938,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     session.autoApprove = rememberedYolo || configAutoApprove;
     session.planActive = false;
     session.hasHistory = false;
+    session.providerPrompted = false;
     session.suppressContent = false;
     session.captureAgentText = undefined;
     session.lastSessionInfoAt = 0;
@@ -9680,6 +9682,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
             }
         }
 
+        // A thread we can RESUME is a thread the provider wrote, so say so
+        // before the load rather than after it. `hasHistory` only becomes
+        // true once the replay settles, and delete keys on both: without
+        // this, a delete landing inside the load window would read the
+        // session as never-written and skip provider cleanup on a thread
+        // that is plainly there.
+        session.providerPrompted = true;
         const loadAt = clock.now();
         let replayAt = 0;
         await this.replayLoadedHistory(session, async () => {
@@ -12729,11 +12738,18 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // Worse than the error: the attempt left the row unusable afterwards, so a
       // failed delete was how a conversation became permanently un-sendable.
       //
-      // Keyed on the session's own `hasHistory`, never on the shape of an error
-      // string: `Internal error` is generic, and treating it as “not found” would
-      // swallow real failures. A cold or used conversation still goes to the
-      // provider, which is the only thing that can forget it.
-      if (live && !live.hasHistory) {
+      // Keyed on the session's own flags, never on the shape of an error string:
+      // `Internal error` is generic, and treating it as “not found” would swallow
+      // real failures. A cold or used conversation still goes to the provider,
+      // which is the only thing that can forget it.
+      //
+      // `hasHistory` alone is NOT the question, and an independent review caught
+      // that: Summarize & Restart mints a fresh id and feeds it the old summary
+      // under `suppressContent`, so the provider has written a thread while the
+      // row still reads “New session” and `hasHistory` is still false. Skipping
+      // the provider there would orphan that thread — invisible to the person,
+      // and resurrectable as a row by the next listing refresh.
+      if (live && !live.hasHistory && !live.providerPrompted) {
         this.host.appendLine(
           `[${provider}] removed empty session ${id} locally: never persisted, nothing to archive`,
         );
@@ -14919,6 +14935,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           this.rememberAdapterContext(session, { compacted: true });
         }
       }
+      session.providerPrompted = true;
       const meta = await client.prompt(promptBlocks);
       if (gen !== session.gen) {
         this.emitAbandonedSend(session);
@@ -15073,6 +15090,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.setStatus(session, "working");
     session.adapterTurnCallUsed = [];
     try {
+      session.providerPrompted = true;
       const meta = await client.prompt(promptBlocks);
       if (gen !== session.gen) {
         this.emitAbandonedSend(session);
@@ -17235,6 +17253,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     session.suppressContent = true;
     session.captureAgentText = "";
     try {
+      session.providerPrompted = true;
       await client.prompt("/session-info");
       if (gen !== session.gen) return;
       const info = parseSessionInfoContext(session.captureAgentText);

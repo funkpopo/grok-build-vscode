@@ -121,6 +121,22 @@ export class Session {
   /** This session has conversational history (vs. a fresh, empty one). */
   hasHistory = false;
 
+  /**
+   * We have asked the provider to run a turn on THIS session id.
+   *
+   * Deliberately not `hasHistory`, which means “the person can see a
+   * conversation here”. The two diverge on a SUPPRESSED prompt: Summarize &
+   * Restart mints a fresh id and feeds it the old summary with
+   * `suppressContent`, so the provider writes a real thread while the row
+   * still reads “New session”. Anything keyed on emptiness to skip provider
+   * cleanup has to ask this instead, or it orphans that thread.
+   *
+   * Set BEFORE the prompt is awaited: a turn that fails midway can still have
+   * written, and the safe error is asking the provider to forget something it
+   * has already forgotten.
+   */
+  providerPrompted = false;
+
   /** True for the session-start window (spawn → newSession/load). Model/effort
    * changes that would race startup are ignored; the webview also locks busy. */
   priming = false;

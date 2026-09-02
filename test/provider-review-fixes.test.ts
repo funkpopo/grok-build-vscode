@@ -346,7 +346,7 @@ describe("deleting a conversation on a machine nobody sits at", () => {
     // the row un-sendable afterwards. Reproducible on both adapter providers;
     // Grok never showed it because its branch removes a directory instead.
     const body = methodBody("async deleteSession(");
-    const guard = body.indexOf("if (live && !live.hasHistory)");
+    const guard = body.indexOf("if (live && !live.hasHistory && !live.providerPrompted)");
     const call = body.indexOf("client.deleteSession(id)");
     expect(guard).toBeGreaterThan(-1);
     expect(call).toBeGreaterThan(-1);
@@ -357,6 +357,31 @@ describe("deleting a conversation on a machine nobody sits at", () => {
     // comment above the guard, which is why this looks for a string test
     // rather than the words.)
     expect(body).not.toMatch(/(includes|indexOf|startsWith|test)\(\s*["'`][^"'`]*Internal error/);
+  });
+
+  it("counts a SUPPRESSED turn as the provider having written", () => {
+    // The trap the guard above walks into if it asks `hasHistory` alone.
+    // Summarize & Restart mints a fresh id and feeds it the previous
+    // summary under `suppressContent`, so the provider writes a real thread
+    // while the row still reads “New session” and `hasHistory` stays false.
+    // Deleting it then would skip the provider and strand that thread —
+    // invisible to the person, and resurrectable by the next listing.
+    const body = methodBody("private async restartSession(");
+    const flag = body.indexOf("session.providerPrompted = true;");
+    const prompt = body.indexOf("[Context from previous session]");
+    expect(flag).toBeGreaterThan(-1);
+    expect(prompt).toBeGreaterThan(-1);
+    // BEFORE the await: a turn that fails midway can still have written, and
+    // the safe error is asking a provider to forget what it already forgot.
+    expect(flag).toBeLessThan(prompt);
+  });
+
+  it("clears the written flag when a session id is replaced", () => {
+    // Same `Session` object, new id: whatever the provider wrote belongs to
+    // the OLD id. Without this reset the flag is sticky and every later
+    // empty session goes back to the provider — the original bug returns.
+    const body = methodBody("private async startSessionBody(");
+    expect(body).toContain("session.providerPrompted = false;");
   });
 
   it("says WHY it refused, in the line it writes", () => {
