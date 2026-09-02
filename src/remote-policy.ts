@@ -1199,6 +1199,12 @@ export function mayDeliverRemoteHostMsg(
     }
     case "message-cwd": {
       if (msg.type === "repoSessions") {
+        // A refusal only echoes the cwd the requester supplied and carries no
+        // host data. Let it return even when that cwd is not authorized so an
+        // invalid request gets a coarse answer instead of silence.
+        if (msg.error) {
+          return msg.entries.length === 0 && Object.keys(msg.dots).length === 0 && msg.total === 0;
+        }
         if (!cwdIsAuthorized(msg.cwd, authorizedCwds, sameCwd)) return false;
         return msg.entries.every(
           (e) => !e.cwd || cwdIsAuthorized(e.cwd, authorizedCwds, sameCwd),
@@ -1461,6 +1467,26 @@ export function routinesMessageForRemote(
       .filter((e) => cwdIsAuthorized(e.cwd, authorizedCwds, sameCwd))
       .map((e) => ({ ...e, runs: e.runs.map((run) => redactRun(run, authorizedCwds, sameCwd)) })),
     projects: msg.projects.filter((p) => cwdIsAuthorized(p.cwd, authorizedCwds, sameCwd)),
+  };
+}
+
+/** Filter unauthorized rows rather than suppressing an entire repo preview. */
+export function repoSessionsMessageForRemote(
+  msg: Extract<HostMsg, { type: "repoSessions" }>,
+  authorizedCwds: readonly string[],
+  sameCwd: (a: string, b: string) => boolean,
+): Extract<HostMsg, { type: "repoSessions" }> {
+  if (msg.error) return msg;
+  const entries = msg.entries.filter(
+    (entry) => !entry.cwd || cwdIsAuthorized(entry.cwd, authorizedCwds, sameCwd),
+  );
+  if (entries.length === msg.entries.length) return msg;
+  const keptIds = new Set(entries.map((entry) => entry.id));
+  return {
+    ...msg,
+    entries,
+    dots: Object.fromEntries(Object.entries(msg.dots).filter(([id]) => keptIds.has(id))),
+    total: entries.length,
   };
 }
 

@@ -259,7 +259,7 @@ import { RemoteUplink } from "./remote-uplink";
 import { RemoteClientState, serializesRemoteSessionTransition } from "./remote-client-state";
 import { RemotePcmIngress, acceptRemotePcm } from "./remote-voice";
 import { SessionRequestState } from "./session-request-state";
-import { allowFromRemote, capabilitiesForRemote, allowRemoteRepoTarget, bracketRemoteSnapshot, mayDeliverRemoteHostMsg, remoteRequiresBoundSession, repoScopeFor, sessionCwdBelongsToRepo, sessionForRequest, shouldAdoptDeskSession, transformHostMsgForRemote, type MediaInlineDeps, type MsgOrigin, type RemoteTier } from "./remote-policy";
+import { allowFromRemote, capabilitiesForRemote, allowRemoteRepoTarget, bracketRemoteSnapshot, mayDeliverRemoteHostMsg, remoteRequiresBoundSession, repoScopeFor, repoSessionsMessageForRemote, sessionCwdBelongsToRepo, sessionForRequest, shouldAdoptDeskSession, transformHostMsgForRemote, type MediaInlineDeps, type MsgOrigin, type RemoteTier } from "./remote-policy";
 import {
   listRemoteProjectDir,
   projectFileContentForWire,
@@ -6038,9 +6038,9 @@ Only continue if you trust this code.`,
 
   /** Answer `listRepoSessions`: the newest few sessions for ONE repo, without
    *  making it the client's selection. `cwd` is matched against the catalog the
-   *  client was already sent — an unknown or unavailable path is dropped in
-   *  silence rather than answered, so a remote can never turn this into a probe
-   *  for which arbitrary paths exist on the host. Both local and remote use
+   *  client was already sent. Unknown and unavailable paths receive the same
+   *  coarse empty refusal, so a remote cannot use the answer to probe whether
+   *  an arbitrary path exists on the host. Both local and remote use
    *  {@link localRepoCatalogEntries} (open folders on desktop, full catalog on
    *  VS Code) so the preview scope cannot exceed the trust set. */
   private buildRepoSessionsPreview(
@@ -6048,15 +6048,21 @@ Only continue if you trust this code.`,
     limit: number | undefined,
     activeId: string | null | undefined,
     scope: "local" | "remote" = "local",
-  ): HostMsg | undefined {
+  ): HostMsg {
     const hit = this.resolveLocalRepoTarget(cwd);
-    if (!hit || !hit.available) return undefined;
+    if (!hit || !hit.available) {
+      this.host.appendLine(`[rail] listRepoSessions failed: project unavailable (${scope})`);
+      return { type: "repoSessions", cwd, entries: [], dots: {}, total: 0, error: "project-unavailable" };
+    }
     // `listRepoSessions` is already gated on remoteTargetableCwd at the inbound
     // choke point, so an archived repo never gets this far from a phone. Said
     // again here because this method resolves through the CATALOG, which is the
     // wider set — a future caller reaching it another way would otherwise get
     // rows the fence exists to withhold.
-    if (scope === "remote" && !this.remoteTargetableCwd(hit.cwd)) return undefined;
+    if (scope === "remote" && !this.remoteTargetableCwd(hit.cwd)) {
+      this.host.appendLine("[rail] listRepoSessions failed: project unavailable (remote)");
+      return { type: "repoSessions", cwd, entries: [], dots: {}, total: 0, error: "project-unavailable" };
+    }
     // Clamp: the rail wants a handful, and an unbounded limit would make every
     // repo row a full history read.
     const size = Math.max(1, Math.min(20, Math.trunc(Number(limit)) || REPO_PREVIEW_SIZE));
@@ -6066,7 +6072,10 @@ Only continue if you trust this code.`,
       activeId,
       scope,
     );
-    if (list.type !== "sessions") return undefined;
+    if (list.type !== "sessions") {
+      this.host.appendLine(`[rail] listRepoSessions failed: session list unavailable (${scope})`);
+      return { type: "repoSessions", cwd: hit.cwd, entries: [], dots: {}, total: 0, error: "sessions-unavailable" };
+    }
     return {
       type: "repoSessions",
       // The host's own spelling, not the one the client sent — the rail keys its
@@ -6086,7 +6095,7 @@ Only continue if you trust this code.`,
       this.remoteActiveSessionId(clientId),
       "remote",
     );
-    if (msg) this.sendRemoteClient(clientId, msg);
+    this.sendRemoteClient(clientId, msg);
   }
 
   private sendLocalRepoSessionsPreview(cwd: string, limit?: number): void {
@@ -6096,7 +6105,7 @@ Only continue if you trust this code.`,
       this.focused.activeSessionId,
       "local",
     );
-    if (msg) this.postLocal(msg);
+    this.postLocal(msg);
   }
 
   /**
@@ -15484,14 +15493,22 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   ): void {
     if (clientIds.length === 0) return;
     const authorized = this.remoteAuthorizedSessionCwds();
-    if (!mayDeliverRemoteHostMsg(message, authorized, scopeCwd, pathsEqual)) {
+    const remoteMessage = this.messageForRemote(message);
+    if (message.type === "repoSessions" && remoteMessage.type === "repoSessions"
+      && remoteMessage.entries.length !== message.entries.length) {
+      const removed = message.entries.length - remoteMessage.entries.length;
+      this.host.appendLine(
+        `[remote] filtered ${removed} unauthorized repoSessions ${removed === 1 ? "entry" : "entries"}`,
+      );
+    }
+    if (!mayDeliverRemoteHostMsg(remoteMessage, authorized, scopeCwd, pathsEqual)) {
       this.host.appendLine(
         `[remote] dropped ${message.type} (project scope not authorized: ${scopeCwd ?? "<none>"})`,
       );
       return;
     }
-    this.postTap?.("remote", message, [...clientIds]);
-    const out = transformHostMsgForRemote(this.messageForRemote(message), this.remoteMediaDeps);
+    this.postTap?.("remote", remoteMessage, [...clientIds]);
+    const out = transformHostMsgForRemote(remoteMessage, this.remoteMediaDeps);
     if (!out) return;
     // Pass scope through so the uplink gate does not re-derive from a stale
     // per-tab mapping for multi-client session fan-out.
@@ -15504,6 +15521,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    *  adding a capability has one obvious place to check, and so the stripping
    *  is testable without standing up a sidebar. */
   private messageForRemote(message: HostMsg): HostMsg {
+    if (message.type === "repoSessions") {
+      return repoSessionsMessageForRemote(
+        message,
+        this.remoteAuthorizedSessionCwds(),
+        pathsEqual,
+      );
+    }
     if (message.type !== "initialState") return message;
     return {
       ...message,
@@ -18208,13 +18232,19 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
       if (!allowRemoteRepoTarget(m, (cwd) => this.remoteTargetableCwd(cwd))) {
         this.host.appendLine(`[remote] dropped ${m.type} (cwd was not discovered)`);
+        if (m.type === "listRepoSessions") {
+          this.sendRemoteClient(clientId, {
+            type: "repoSessions", cwd: m.cwd, entries: [], dots: {}, total: 0,
+            error: "project-unavailable",
+          });
+        }
         return;
       }
       // Messages with no cwd still act on a bound session / client-selected
       // repo. A closed folder must revoke those ops even when allowRemoteRepoTarget
       // returns true (its default branch). selectRepo is the escape hatch to a
       // still-authorized target and is gated only by the message cwd above.
-      if (m.type !== "selectRepo") {
+      if (m.type !== "selectRepo" && m.type !== "listRepoSessions") {
         const active = this.remoteClients.active(clientId);
         const boundCwd = active
           ? this.sessionCwd(active)

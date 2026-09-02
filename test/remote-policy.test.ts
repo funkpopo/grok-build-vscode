@@ -9,6 +9,7 @@ import {
   allowRemoteRepoTarget,
   bracketRemoteSnapshot,
   mayDeliverRemoteHostMsg,
+  repoSessionsMessageForRemote,
   routinesMessageForRemote,
   repoScopeFor,
   sessionForRequest,
@@ -272,6 +273,39 @@ describe("mayDeliverRemoteHostMsg (outbound project authorization)", () => {
         same,
       ),
     ).toBe(true);
+  });
+
+  it("filters an unauthorized repoSessions row instead of dropping authorized rows", () => {
+    const mixed = {
+      type: "repoSessions",
+      cwd: open[0],
+      entries: [
+        { id: "ordinary", cwd: open[0], title: "Ordinary" },
+        { id: "worktree", cwd: "/tmp/worktree", title: "Worktree" },
+      ],
+      dots: { ordinary: "working", worktree: "needs-you" },
+      total: 2,
+    } as Extract<HostMsg, { type: "repoSessions" }>;
+
+    // The raw mixed frame still fails closed; the outbound rewriter makes the
+    // authorized subset pass the same gate.
+    expect(mayDeliverRemoteHostMsg(mixed, open, undefined, same)).toBe(false);
+    const filtered = repoSessionsMessageForRemote(mixed, open, same);
+    expect(filtered.entries.map((entry) => entry.id)).toEqual(["ordinary"]);
+    expect(filtered.dots).toEqual({ ordinary: "working" });
+    expect(filtered.total).toBe(1);
+    expect(mayDeliverRemoteHostMsg(filtered, open, undefined, same)).toBe(true);
+  });
+
+  it("allows a coarse empty repoSessions refusal to answer an unauthorized request", () => {
+    expect(mayDeliverRemoteHostMsg({
+      type: "repoSessions",
+      cwd: closed,
+      entries: [],
+      dots: {},
+      total: 0,
+      error: "project-unavailable",
+    }, open, undefined, same)).toBe(true);
   });
 
   describe("the routines frame", () => {
