@@ -8646,7 +8646,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.emit(session, { type: "sessionContext" });
       session.suppressContent = true;
       try {
-        session.providerPrompted = true;
         await session.client.prompt(`[Context from previous session]\n${summary}`);
       } catch { /* best effort */ } finally {
         session.suppressContent = false;
@@ -8938,7 +8937,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     session.autoApprove = rememberedYolo || configAutoApprove;
     session.planActive = false;
     session.hasHistory = false;
-    session.providerPrompted = false;
+    session.providerWrote = false;
     session.suppressContent = false;
     session.captureAgentText = undefined;
     session.lastSessionInfoAt = 0;
@@ -9221,6 +9220,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         return;
       }
       session.inUserMessage = false;
+      session.providerWrote = true;
       session.historyEventCount += 1;
       this.emit(session, { type: "messageChunk", text });
       this.noteAdapterCompactSignal(session, text);
@@ -9288,6 +9288,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     client.on("thoughtChunk", (text: string) => {
       if (gen !== session.gen) return;
       session.inUserMessage = false;
+      session.providerWrote = true;
       session.historyEventCount += 1;
       this.emit(session, { type: "thoughtChunk", text });
     });
@@ -9349,6 +9350,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const emitToolCallEvent = (type: "toolCall" | "toolCallUpdate", u: unknown) => {
       const prepared = prepareMcpToolCall(u, mcpState);
       session.inUserMessage = false;
+      session.providerWrote = true;
       session.historyEventCount += 1;
       this.emit(session, { type, call: prepared.call });
       this.noteAdapterCompactSignal(session, prepared.call);
@@ -9682,13 +9684,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
             }
         }
 
-        // A thread we can RESUME is a thread the provider wrote, so say so
-        // before the load rather than after it. `hasHistory` only becomes
-        // true once the replay settles, and delete keys on both: without
-        // this, a delete landing inside the load window would read the
-        // session as never-written and skip provider cleanup on a thread
-        // that is plainly there.
-        session.providerPrompted = true;
         const loadAt = clock.now();
         let replayAt = 0;
         await this.replayLoadedHistory(session, async () => {
@@ -12749,7 +12744,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // row still reads “New session” and `hasHistory` is still false. Skipping
       // the provider there would orphan that thread — invisible to the person,
       // and resurrectable as a row by the next listing refresh.
-      if (live && !live.hasHistory && !live.providerPrompted) {
+      //
+      // So ask the provider's own output instead. Both directions are real
+      // failures — skipping cleanup on a thread that exists orphans it, and
+      // asking for cleanup on one that does not is the bug this guard removes.
+      if (live && !live.hasHistory && !live.providerWrote) {
         this.host.appendLine(
           `[${provider}] removed empty session ${id} locally: never persisted, nothing to archive`,
         );
@@ -14935,7 +14934,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           this.rememberAdapterContext(session, { compacted: true });
         }
       }
-      session.providerPrompted = true;
       const meta = await client.prompt(promptBlocks);
       if (gen !== session.gen) {
         this.emitAbandonedSend(session);
@@ -15090,7 +15088,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.setStatus(session, "working");
     session.adapterTurnCallUsed = [];
     try {
-      session.providerPrompted = true;
       const meta = await client.prompt(promptBlocks);
       if (gen !== session.gen) {
         this.emitAbandonedSend(session);
@@ -17253,7 +17250,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     session.suppressContent = true;
     session.captureAgentText = "";
     try {
-      session.providerPrompted = true;
       await client.prompt("/session-info");
       if (gen !== session.gen) return;
       const info = parseSessionInfoContext(session.captureAgentText);
