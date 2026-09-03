@@ -12838,18 +12838,24 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // different conversation is not moved.
     const neighbour = neighbourAfterDelete(visibleEntries, id);
     if (wasFocused) {
-      // The neighbour can REFUSE. `openSession` returns without touching focus
-      // when another view holds that session's load reservation — and by this
-      // point the conversation we were focused on is deleted and disposed, so
-      // returning early would leave `this.focused` pointing at it: the view
-      // still looks attached, and the next send tries to resume a deleted id.
-      // That is the zombie focus a review caught in `2291258`, arriving by a
-      // different door. So the mint below is not only the empty-project case;
-      // it is also what catches a neighbour that would not take us.
-      const tookUs = neighbour
-        ? await this.openSession(neighbour.id, neighbour.cwd)
-        : false;
-      if (!tookUs) {
+      // ASK THE ONLY QUESTION THAT MATTERS: is the view still on the
+      // conversation we just deleted?
+      //
+      // Three review rounds went at this tail, and the first two attempts were
+      // exact inverses of each other. Reading `this.focused` and comparing it
+      // to the neighbour minted a blank over a conversation the person had
+      // chosen mid-load. Asking `openSession` whether it succeeded minted a
+      // blank when the person had ALREADY opened that neighbour themselves, so
+      // the call was refused by their own reservation. Both were proxies, and
+      // a proxy has a direction to be wrong in.
+      //
+      // The failure being guarded is narrow and has never changed: focus left
+      // pointing at a deleted, disposed session, where the view looks attached
+      // and the next send tries to resume an id that is gone. Anywhere else the
+      // person ends up is fine — the neighbour, or whatever they clicked while
+      // this was finishing. So test THAT, by identity, and nothing else.
+      if (neighbour) await this.openSession(neighbour.id, neighbour.cwd);
+      if (this.focused === live) {
         this.focused = this.newLocalSession();
         // Neighbour rows already live in this project. A minted replacement
         // does not — without this it starts in the VS Code workspace folder

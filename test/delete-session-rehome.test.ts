@@ -309,23 +309,25 @@ describe("what the reuse and neighbour rules refuse to assume", () => {
     expect(body).not.toContain("list.entries");
   });
 
-  it("asks the call whether it worked, never the world afterwards", () => {
-    // `openSession` declines when another view holds the load reservation, and
-    // by then the deleted conversation is disposed — so focus must not stay on
-    // it. The first attempt inferred that from `this.focused` after the await,
-    // and a review found two regressions in the inference: a user who clicked a
-    // DIFFERENT conversation mid-load had their choice replaced by a blank one,
-    // and a vanished id produced two blanks because openSession’s own fallback
-    // was not recognised as success. Global state after an await cannot answer
-    // "did this call work".
-    const at = src.indexOf("const tookUs = neighbour");
+  it("mints only when the view is still on the deleted conversation", () => {
+    // Three rounds hit this tail and the first two fixes were exact inverses.
+    // Comparing `this.focused` to the neighbour minted a blank over a
+    // conversation the person chose mid-load. Asking openSession whether it
+    // succeeded minted a blank when the person had already opened that
+    // neighbour themselves and their own reservation refused the call. Both
+    // were proxies for the real question, and a proxy has a direction to be
+    // wrong in.
+    //
+    // The guarded failure never changed: focus left on a deleted, disposed
+    // session, so the view looks attached and the next send resumes a dead id.
+    // Anywhere else the person lands is fine.
+    const at = src.indexOf("ASK THE ONLY QUESTION THAT MATTERS");
     expect(at).toBeGreaterThan(-1);
-    const branch = src.slice(at, at + 900);
-    expect(branch).toContain("if (!tookUs) {");
+    const branch = src.slice(at, at + 1800);
+    expect(branch).toContain("if (this.focused === live) {");
     expect(branch).toContain("await this.startSession();");
-    // The discarded proxy must not come back.
+    // Neither discarded proxy may come back.
     expect(src).not.toContain("this.focused.activeSessionId !== neighbour.id");
-    // And the method has to actually report an outcome.
-    expect(src).toContain("private async openSession(id: string, sessionCwd?: string): Promise<boolean>");
+    expect(src).not.toContain("if (!tookUs)");
   });
 });
