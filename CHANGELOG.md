@@ -1,5 +1,27 @@
 # Changelog
 
+## 4.1.5 — 2026-09-03
+
+**Deleting a conversation now deletes it.** The one you are looking at used to disappear and come straight back as an identical empty row, so it looked as though nothing had happened. Along with it: the small print in a message footer is readable on a phone, and the Delete button's label is white instead of near-black on red.
+
+### Fixed
+
+- **Deleting the conversation you have open removes it and moves you to the next one.** It used to be replaced immediately by a fresh empty conversation, which looked identical to the one just deleted — and because the new one sorted to the top, the list appeared to jump under your selection. You now land on the neighbouring row, and a new conversation is created only when the project has none left. If you had typed a follow-up while the agent was working, deleting no longer leaves the conversation behind as a row that returns.
+
+- **Two identical “New session” rows stop appearing.** Creating a blank conversation now reuses an unused empty one in that project instead of adding a second, which is where the duplicates came from.
+
+- **A machine that keeps losing its connection settles down instead of hammering.** Reconnect delay was reset the moment a socket opened, so a host that connected and immediately dropped retried once a second indefinitely. It now waits for a connection that lasted. Most visible on cloud machines, which lose their connection every time they suspend.
+
+- **Two browser tabs can no longer end up in one conversation.** Deleting from one tab could move it onto the conversation another tab was already using, and returning from a disconnect could do the same — in both cases the next message went into somebody else's tab. Each tab now gets a conversation of its own.
+
+- **A conversation that will not open says so in plain words** rather than repeating the agent's wording and an internal identifier.
+
+### Readability
+
+- **The Delete button's label is white.** It was near-black on red — about 2.3:1 against the darker reds light themes use, under the 4.5:1 needed to read comfortably.
+
+- **The timestamp and icons under a message are legible on a phone.** They rested at 40% of an already-muted colour, which compounds to roughly 1.7:1; on touch there is no hover, so that faint state was the permanent one. The row is still quiet, just no longer twice-quietened. The copy icon also stopped reading darker than the time beside it.
+
 ## 4.1.4 — 2026-09-03
 
 **A machine that could not settle, and an error message that blamed you for it.** One fix stops a host retrying a failed connection every second for ever; the other stops a conversation that simply would not open from reading like a fault in your installation.
