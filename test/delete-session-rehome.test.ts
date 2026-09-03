@@ -322,7 +322,10 @@ describe("what the reuse and neighbour rules refuse to assume", () => {
     expect(body).toContain("this.focused === live");
     expect(body).toContain("this.focused.activeSessionId === id");
     // And the decision must consult it, not the snapshot alone.
-    expect(src).toContain("const viewIsOnDeleted = wasFocused || this.viewIsOnDeleted(live, id);");
+    // And no snapshot may feed the decision: `wasFocused` was read before
+    // the teardown, so a view that moved after it answered for a view that
+    // no longer existed.
+    expect(src).not.toContain("wasFocused");
   });
 
   it("mints only when the view is still on the deleted conversation", () => {
@@ -337,10 +340,10 @@ describe("what the reuse and neighbour rules refuse to assume", () => {
     // The guarded failure never changed: focus left on a deleted, disposed
     // session, so the view looks attached and the next send resumes a dead id.
     // Anywhere else the person lands is fine.
-    const at = src.indexOf("ASK THE ONLY QUESTION THAT MATTERS");
+    const at = src.indexOf("THE ONLY QUESTION");
     expect(at).toBeGreaterThan(-1);
     const branch = src.slice(at, at + 1800);
-    expect(branch).toContain("if (this.viewIsOnDeleted(live, id)) {");
+    expect(branch).toContain("const viewNeedsHome = this.viewIsOnDeleted(live, id);");
     expect(branch).toContain("await this.startSession();");
     // Neither discarded proxy may come back.
     expect(src).not.toContain("this.focused.activeSessionId !== neighbour.id");

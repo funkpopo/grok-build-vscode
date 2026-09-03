@@ -75,7 +75,7 @@ describe("local repo scope", () => {
     // conversation IS open on this path, and only the VS Code half of the
     // switch is skipped. Reading it as a failure would have made a caller
     // mint a blank conversation over a perfectly good one.
-    expect(body).toMatch(/if \(this\.host\.canSwitchWorkspaceFolder\) return true;/);
+    expect(body).toMatch(/if \(this\.host\.canSwitchWorkspaceFolder\) return;/);
     expect(body).toMatch(/this\.selectedRepoCwd = openedIn\.cwd;/);
   });
 
@@ -153,7 +153,7 @@ describe("cross-project fallout of following the selection", () => {
     // Renamed from `wasFocused`: the snapshot taken before the provider
     // teardown could not see a view that navigated onto the conversation
     // while it was being deleted. The cwd rule this test guards is unchanged.
-    const at = sidebar.indexOf("if (viewIsOnDeleted) {");
+    const at = sidebar.indexOf("if (viewNeedsHome) {");
     expect(at).toBeGreaterThan(-1);
     const arm = sidebar.slice(at, sidebar.indexOf("}", sidebar.indexOf("startSession()", at)));
     expect(arm).toMatch(/this\.setSessionCwd\(\s*this\.focused,\s*this\.historyCwdFor\("local"\)/);

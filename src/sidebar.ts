@@ -12731,8 +12731,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // be refused outright rather than merely awkward. `disposeSession` ends the
     // turn, drops the client and disposes it, so by the time the files go there
     // is nothing left that could write them again.
-    const wasFocused = !!live && live === this.focused;
-    // Read again after the teardown, never from the line above: see the note
+
     const visibleEntries = this.buildSessionsList(
       cwd,
       { limit: Number.MAX_SAFE_INTEGER },
@@ -12838,31 +12837,20 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // when that list is empty. Watchers share that same home. A viewer of a
     // different conversation is not moved.
     const neighbour = neighbourAfterDelete(visibleEntries, id);
-    // `wasFocused` was taken BEFORE the provider teardown, and a later round
-    // showed why that is not enough: a delete that was not focused when it
-    // started can finish after the view has navigated ONTO the very
-    // conversation being deleted, and the stale snapshot then says “not mine”
-    // and leaves the view attached to a disposed session. Either being true
-    // means the view needs re-homing, so ask both, now.
-    const viewIsOnDeleted = wasFocused || this.viewIsOnDeleted(live, id);
-    if (viewIsOnDeleted) {
-      // ASK THE ONLY QUESTION THAT MATTERS: is the view still on the
-      // conversation we just deleted?
-      //
-      // Three review rounds went at this tail, and the first two attempts were
-      // exact inverses of each other. Reading `this.focused` and comparing it
-      // to the neighbour minted a blank over a conversation the person had
-      // chosen mid-load. Asking `openSession` whether it succeeded minted a
-      // blank when the person had ALREADY opened that neighbour themselves, so
-      // the call was refused by their own reservation. Both were proxies, and
-      // a proxy has a direction to be wrong in.
-      //
-      // The failure being guarded is narrow and has never changed: focus left
-      // pointing at a deleted, disposed session, where the view looks attached
-      // and the next send tries to resume an id that is gone. Anywhere else the
-      // person ends up is fine — the neighbour, or whatever they clicked while
-      // this was finishing. So test THAT, and nothing else.
+    // THE ONLY QUESTION: is the view sitting on something that no longer
+    // exists? If so it needs a home; if not, wherever the person is now is
+    // where they want to be.
+    //
+    // Asked after the teardown, never remembered from before it. Four review
+    // rounds went at this and every wrong answer was a PROXY — comparing focus
+    // to the neighbour, asking whether the open succeeded, trusting a snapshot
+    // taken earlier. Each minted a blank conversation over one the person had
+    // deliberately opened, in one direction or the other.
+    const viewNeedsHome = this.viewIsOnDeleted(live, id);
+    if (viewNeedsHome) {
       if (neighbour) await this.openSession(neighbour.id, neighbour.cwd);
+      // Still here means the open declined — another view holds that
+      // session's load reservation — so there is nowhere to go but a new one.
       if (this.viewIsOnDeleted(live, id)) {
         this.focused = this.newLocalSession();
         // Neighbour rows already live in this project. A minted replacement
@@ -12878,7 +12866,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     let home =
       neighbour
         ? this.liveSessionById(neighbour.id)
-        : viewIsOnDeleted ? this.focused : undefined;
+        : viewNeedsHome ? this.focused : undefined;
     for (const watcher of watchers) {
       if (home) {
         this.dropRemoteVoice(watcher);
@@ -15899,7 +15887,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         session.hasHistory = true;
         this.pool.add(session);
       },
-      openLocalSession: async (id, cwd) => { await this.openSession(id, cwd); },
+      openLocalSession: (id, cwd) => this.openSession(id, cwd),
       seedWorktree: (record) => {
         this.worktreeCache = this.worktreeCache.filter((wt) => !pathsEqual(wt.path, record.path));
         this.worktreeCache.push(record);
@@ -17895,20 +17883,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    * it instantly (lossless buffer replay — no reload). Otherwise park the current
    * session and load this one cold from grok's on-disk history into a fresh member.
    */
-  /**
-   * Open a conversation locally. Resolves TRUE when this call took
-   * responsibility for the view — including when it had to fall back to a
-   * fresh conversation because the id had gone — and FALSE only when it
-   * declined outright because another view holds the load reservation.
-   *
-   * Callers used to infer that from `this.focused` afterwards, and two
-   * regressions came straight out of it: a user who clicked a DIFFERENT
-   * conversation while this one loaded had their choice replaced by a blank
-   * one, and a vanished id produced two blanks because this method's own
-   * fallback was not recognised as a success. Global state after an await
-   * cannot answer “did this call work”; only the call can.
-   */
-  private async openSession(id: string, sessionCwd?: string): Promise<boolean> {
+  private async openSession(id: string, sessionCwd?: string): Promise<void> {
     // The user's open starts HERE, not in startSession. See the note there.
     const clock = new OpenClock();
     const claim = this.reserveSessionLoad(id);
@@ -17917,7 +17892,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       void this.host.showInformationMessage(
         "This conversation is already being opened in another tab or view.",
       );
-      return false;
+      return;
     }
     let failure: unknown;
     try {
@@ -17955,16 +17930,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // a conversation is not a request to change which project you are in.
     // Desktop's own selectRepo does the whole switch; this is the half VS Code
     // needs because it has no folder to switch.
-    // The conversation is open either way; what follows is only the VS Code
-    // half of the switch. Success, not an early exit.
-    if (this.host.canSwitchWorkspaceFolder) return true;
+    if (this.host.canSwitchWorkspaceFolder) return;
     const openedIn = this.resolveLocalRepoTarget(this.sessionCwd(this.focused));
     if (openedIn && !pathsEqual(openedIn.cwd, this.selectedRepoCwd || "")) {
       this.selectedRepoCwd = openedIn.cwd;
       this.postRepoCatalog();
       this.postSessionsList();
     }
-    return true;
   }
 
   /**
