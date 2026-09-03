@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.1.4 — 2026-09-03
+
+**A machine that could not settle, and an error message that blamed you for it.** One fix stops a host retrying a failed connection every second for ever; the other stops a conversation that simply would not open from reading like a fault in your installation.
+
+### Fixed
+
+- **A host that keeps losing its connection now backs off instead of hammering.** The retry delay was reset the moment a socket opened, which sounds right and is not: it meant the delay could only grow while connections FAILED, and never against one that connected and immediately dropped — which is the situation it exists for. A machine in that state retried once a second indefinitely. It now waits for a connection that actually lasted before treating the way as clear, so a flapping machine settles down while a healthy one still reconnects immediately. Most visible on cloud machines, which suspend when idle and lose their connection every time they do.
+
+- **A conversation that will not open says so in plain words.** It used to answer with the agent's own wording and an internal identifier — “Failed to start Claude: Resource not found: 85730a78-9918-43d7-a6c6-91a058348d89” — for something that is often entirely ordinary: a conversation whose first message never finished recording. The message now names what may have happened and what to do about it, and deliberately claims nothing more, because that same signal is also raised when the agent simply did not finish starting.
+
 ## 4.1.3 — 2026-09-03
 
 **Two ways a conversation could get stuck, both of them on the way out.** Deleting one you had just started could kill it instead, and on a cloud machine the app could insist somebody else was looking at it — on a machine nobody is ever sitting at.
