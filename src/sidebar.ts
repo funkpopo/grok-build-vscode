@@ -12846,12 +12846,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // to the neighbour, asking whether the open succeeded, trusting a snapshot
     // taken earlier. Each minted a blank conversation over one the person had
     // deliberately opened, in one direction or the other.
-    const viewNeedsHome = this.viewIsOnDeleted(live, id);
+    const viewNeedsHome = this.viewIsOnDeleted(id);
     if (viewNeedsHome) {
       if (neighbour) await this.openSession(neighbour.id, neighbour.cwd);
       // Still here means the open declined — another view holds that
       // session's load reservation — so there is nowhere to go but a new one.
-      if (this.viewIsOnDeleted(live, id)) {
+      if (this.viewIsOnDeleted(id)) {
         this.focused = this.newLocalSession();
         // Neighbour rows already live in this project. A minted replacement
         // does not — without this it starts in the VS Code workspace folder
@@ -16284,19 +16284,25 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   /**
    * Is the local view sitting on the conversation that was just deleted?
    *
-   * By object identity OR by id, because both happen: the ordinary case is
-   * that the deleted session IS the focused one, and the awkward case is that
-   * the view moved onto it while the delete was in flight, giving a different
-   * `Session` object carrying the same id.
+   * By ID, and only by id. `disposeSession` does not clear `activeSessionId`,
+   * so a view still attached to the dead conversation still carries its id —
+   * which covers both the ordinary case and a view that moved onto it while
+   * the delete was in flight.
+   *
+   * Object identity was tried and removed. A `Session` is a container that
+   * gets RECYCLED: after the delete disposes it, a reasoning-effort change
+   * calls `startSession(undefined, session)` and the same object comes back
+   * holding a brand-new conversation. Identity then said “still on the deleted
+   * one” and moved the person off a conversation they had just started
+   * writing in. The id cannot make that mistake: it is the conversation, not
+   * the box it arrived in.
    *
    * Asked at the moment of the decision. A snapshot taken before the provider
    * teardown answers a question about a view that has since moved.
    */
-  private viewIsOnDeleted(live: Session | undefined, id: string): boolean {
-    if (live && this.focused === live) return true;
+  private viewIsOnDeleted(id: string): boolean {
     return !!id && this.focused.activeSessionId === id;
   }
-
   private newLocalSession(): Session {
     return new Session();
   }

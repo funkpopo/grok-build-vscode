@@ -318,9 +318,15 @@ describe("what the reuse and neighbour rules refuse to assume", () => {
     const at = src.indexOf("private viewIsOnDeleted");
     expect(at).toBeGreaterThan(-1);
     const body = src.slice(at, src.indexOf("private newLocalSession", at));
-    // Identity for the ordinary case, id for the one that moved.
-    expect(body).toContain("this.focused === live");
+    // BY ID ONLY. `disposeSession` leaves `activeSessionId` in place, so the
+    // id covers both a view that never moved and one that moved onto the
+    // conversation mid-delete.
     expect(body).toContain("this.focused.activeSessionId === id");
+    // Object identity was tried and removed: a Session is RECYCLED, so after
+    // disposal a reasoning-effort change can hand the same object a brand-new
+    // conversation. Identity then reads "still on the deleted one" and moves
+    // the person off something they just started writing in.
+    expect(body).not.toContain("this.focused === live");
     // And the decision must consult it, not the snapshot alone.
     // And no snapshot may feed the decision: `wasFocused` was read before
     // the teardown, so a view that moved after it answered for a view that
@@ -343,7 +349,7 @@ describe("what the reuse and neighbour rules refuse to assume", () => {
     const at = src.indexOf("THE ONLY QUESTION");
     expect(at).toBeGreaterThan(-1);
     const branch = src.slice(at, at + 1800);
-    expect(branch).toContain("const viewNeedsHome = this.viewIsOnDeleted(live, id);");
+    expect(branch).toContain("const viewNeedsHome = this.viewIsOnDeleted(id);");
     expect(branch).toContain("await this.startSession();");
     // Neither discarded proxy may come back.
     expect(src).not.toContain("this.focused.activeSessionId !== neighbour.id");
