@@ -737,6 +737,18 @@ export function nextBackoffMs(prev: number): number {
  * Production measured 65,792,061 of them against 23,832 for the
  * per-connection ownership query, and sat at 90-95% CPU for a week.
  *
+ * KNOWN COST, accepted deliberately. If the delay has already grown to the
+ * cap (about five consecutive failures) and the next connection works but is
+ * cut short of the bar by a SECOND interruption, the host waits the full 30s
+ * instead of a second, and a phone shows the machine offline meanwhile. An
+ * independent round raised it; before this change that case retried at once.
+ *
+ * Kept anyway. Every alternative is worse: resetting on open is the defect
+ * itself, a smaller bar is a knob nobody can pick correctly, and resetting on
+ * “did some real work” re-admits the storm, since a socket the relay served
+ * for half a second did work too. The cost is a bounded wait that heals
+ * itself; the alternative was 65 million queries and a week at 95% CPU.
+ *
  * The bar is `MAX_BACKOFF_MS` rather than a new constant, and it says
  * something meaningful: a connection that outlived the longest delay we
  * would ever wait was working. Anything shorter is a flap, and a flap must
