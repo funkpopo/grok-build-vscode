@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.1.3 — 2026-09-03
+
+**Two ways a conversation could get stuck, both of them on the way out.** Deleting one you had just started could kill it instead, and on a cloud machine the app could insist somebody else was looking at it — on a machine nobody is ever sitting at.
+
+### Fixed
+
+- **Deleting a conversation you have not used yet no longer breaks it.** On Codex and Claude, starting a session and deleting it while open answered “Internal error” — and left that conversation permanently unable to send, so the failed delete was how it died. Both providers write a conversation down only once a turn has actually run, so there was nothing there to delete and the refusal was right; the damage was the host abandoning its own cleanup after hearing it. The row now goes either way, and “there was nothing there” is no longer reported to you as a failure of your system. Grok never showed this, because it removes a folder and a missing folder is harmless — that difference is what named the cause.
+
+- **A conversation on a cloud machine is no longer “open in another tab or the VS Code view”.** There is no tab and no editor on a cloud machine, but the host still kept a pointer at whatever it had opened last and counted that pointer as a person. Once you moved elsewhere the conversation stayed locked to it for good, naming two surfaces that do not exist there. The giveaway was the missing button to take it back: that appears whenever a real second device holds a conversation, and there was no second device. A second phone or browser tab still protects a conversation, exactly as before.
+
 ## 4.1.2 — 2026-09-02
 
 **Things that quietly did nothing now do something, or say why.** A click on a sleeping cloud machine, a Clone that vanished, a Hide that was never going to work, a project telling you to update software that was already current — four different silences, one release.
