@@ -295,13 +295,25 @@ describe("loginGithubWithToken", () => {
 });
 
 describe("remote policy", () => {
-  it("lets a remote list repos, paste a token, and sign in, but signs out only on a cloud host", () => {
+  it("lets a remote list repos, but pastes a token and signs out only on a cloud host", () => {
     expect(INBOUND_DISPOSITION.listGithubRepos).toBe("full");
-    expect(INBOUND_DISPOSITION.githubLoginWithToken).toBe("full");
+    expect(allowFromRemote("listGithubRepos", "full")).toBe(true);
+
+    // A token needs NO approval anywhere — the token is the credential — so a
+    // relay that had been compromised could inject one and gh would make that
+    // account active on a desk laptop, with setup-git pointing git at it.
+    // `setupGithubCli` stays reachable from a remote precisely because an
+    // injected device flow cannot be completed: a person has to approve the
+    // code at GitHub. A desk has a terminal and does not need the paste path;
+    // a cloud machine has no terminal and has no other way in.
+    expect(INBOUND_DISPOSITION.githubLoginWithToken).toBe("host-local");
+    expect(allowFromRemote("githubLoginWithToken", "full")).toBe(false);
+    expect(allowFromRemote("githubLoginWithToken", "full", { isCloud: true })).toBe(true);
+
     expect(INBOUND_DISPOSITION.githubSignOut).toBe("host-local");
-    expect(allowFromRemote("githubLoginWithToken", "full")).toBe(true);
     expect(allowFromRemote("githubSignOut", "full")).toBe(false);
     expect(allowFromRemote("githubSignOut", "full", { isCloud: true })).toBe(true);
+
     expect(REMOTE_REQUIRES_BOUND_SESSION.listGithubRepos).toBe(false);
     expect(REMOTE_REQUIRES_BOUND_SESSION.githubLoginWithToken).toBe(false);
     expect(REMOTE_REQUIRES_BOUND_SESSION.githubSignOut).toBe(false);

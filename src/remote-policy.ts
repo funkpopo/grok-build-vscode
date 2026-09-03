@@ -248,7 +248,18 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   // A pasted token is a secret crossing the relay, and that is the point of
   // the advanced option on a machine we host: a fine-grained token can be
   // scoped to one repository. The host stores nothing; gh does. Never echo.
-  githubLoginWithToken: "full",
+  //
+  // HOST-LOCAL on a desk, admitted on a cloud machine by CLOUD_DISPOSITION —
+  // the same shape as githubSignOut, and it is not symmetry for its own sake.
+  // `setupGithubCli` is reachable from a remote because an injected device-code
+  // flow CANNOT be completed: GitHub makes a person approve the code. A token
+  // needs no approval, because the token IS the credential. So a relay that had
+  // been compromised could log a desk laptop in as somebody else — gh makes the
+  // new account active and `setup-git` points git at it — and every later
+  // GitHub operation on that machine would run as them. A desk has a terminal,
+  // which is the whole reason it does not need this path; a cloud machine has
+  // no terminal and no other way in.
+  githubLoginWithToken: "host-local",
   resumeSession: "view",
   renameSession: "view",
   // read-only workspace file-name lookup (the composer's @ popover)
@@ -658,6 +669,9 @@ const TIER_RANK: Record<RemoteTier, number> = { "read-only": 0, propose: 1, full
 const CLOUD_DISPOSITION: Partial<Record<WebviewMsg["type"], InboundDisposition>> = {
   logout: "full",
   githubSignOut: "full",
+  // The advanced token path exists FOR this surface: no terminal, and a
+  // fine-grained token is the smallest credential a hosted machine can hold.
+  githubLoginWithToken: "full",
 
   // Re-observing the accounts is host-local on a desk because a phone should
   // not be able to spawn CLI probes on somebody's laptop. On a cloud machine

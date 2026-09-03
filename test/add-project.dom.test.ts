@@ -501,4 +501,33 @@ describe("add project", () => {
     click(h.window, connect);
     expect(h.posted).toContainEqual({ type: "setupGithubCli", action: "auth" });
   });
+
+  // The relay serves this client, so it is always as new as the last deploy
+  // while the extension is whatever the person installed — "older host" is the
+  // ordinary case here, not an edge one. A host predating `remoteGithubSignIn`
+  // DROPS `setupGithubCli`, so posting it anyway leaves a button that does
+  // nothing at all. The post-clone fix row has always checked this; the
+  // picker's own Connect row is a second entry point to the same action.
+  const openConnectRow = (h: Harness) => {
+    installOpener(h);
+    openMenu(h);
+    click(h.window, [...h.doc.querySelectorAll(".rail-menu-item")][0]);
+    dispatch(h.window, { type: "githubState", github: { connected: false, cliPresent: true } });
+    return [...h.doc.querySelectorAll(".add-project-option")].find((el) =>
+      el.textContent?.includes("Connect GitHub"),
+    )!;
+  };
+
+  it("explains instead of posting a message an older host would drop", () => {
+    const h = boot({ remote: true, caps: { ...CAPS, remoteGithubSignIn: false } });
+    click(h.window, openConnectRow(h));
+    expect(h.posted.some((m) => m.type === "setupGithubCli")).toBe(false);
+    expect(h.doc.querySelector(".add-project-form")!.textContent).toMatch(/terminal|too old/i);
+  });
+
+  it("still connects when the host advertises that it can", () => {
+    const h = boot({ remote: true, caps: { ...CAPS, remoteGithubSignIn: true } });
+    click(h.window, openConnectRow(h));
+    expect(h.posted).toContainEqual({ type: "setupGithubCli", action: "auth" });
+  });
 });
