@@ -115,6 +115,32 @@ export type ProjectSetupGithub = {
   message?: string;
 };
 
+/**
+ * GitHub connection snapshot. Field presence is the capability: an older host
+ * never sends `githubState`, and the Settings row / clone picker stay hidden
+ * rather than offering controls that host would drop.
+ *
+ * Never carries a token. `envTokenInForce` is whether this process has
+ * `GH_TOKEN` or `GITHUB_TOKEN` set — not a gh credential-source string,
+ * which is not portably readable.
+ */
+export type GithubState = {
+  connected: boolean;
+  login?: string;
+  envTokenInForce?: boolean;
+  error?: boolean;
+  cliPresent?: boolean;
+  message?: string;
+  /** Live device-code card, when sign-in was started from Settings. */
+  loginFlow?: ProjectSetupGithub;
+};
+
+export type GithubRepoView = {
+  nameWithOwner: string;
+  isPrivate: boolean;
+  updatedAt: string;
+};
+
 /** Machine-readable `error.code` for a send abandoned after its userMessage echo. */
 export const INTERRUPTED_SEND_CODE = "interrupted-send" as const;
 
@@ -376,7 +402,22 @@ export type HostMsg =
        * Additive: an older client ignores it and renders the form as before.
        */
       github?: ProjectSetupGithub;
+      /**
+       * The derived folder name was already taken. Additive: the form then
+       * asks for a different name rather than failing the clone as a dead end.
+       */
+      collision?: string;
     }
+  /**
+   * GitHub connection for Settings and the clone picker. Additive: an older
+   * client ignores it. Never carries a token.
+   */
+  | { type: "githubState"; github: GithubState }
+  /**
+   * One page of repositories for the clone combobox. Fetched on form open,
+   * filtered on the client — a keystroke must not cross the relay.
+   */
+  | { type: "githubRepos"; repos: GithubRepoView[]; truncated?: boolean; error?: string }
   /** Connected agents plus host-observed, view-only version facts. Version
    * fields are additive so an older host/client keeps the connection UI.
    * `needsLogin` is the account that is still configured but answered an
@@ -919,15 +960,36 @@ export type WebviewMsg =
    * Same containment: a URL is not a destination. Git's own credential helper
    * does the authenticating — nothing here mints, stores or forwards a token.
    */
-  | { type: "cloneProject"; url: string }
+  | { type: "cloneProject"; url: string; name?: string }
   /**
    * Install or sign in to the GitHub CLI.
    *
-   * Offered only after a clone failed in a way `gh` would fix. A local webview
+   * Offered after a clone failed in a way `gh` would fix, and from the
+   * Settings GitHub row / the clone picker's connect row. A local webview
    * still opens a terminal. A remote `auth` runs the headless device-code flow
-   * and reports the URL and code on `projectSetup.github`.
+   * and reports the URL and code on `projectSetup.github` and `githubState`.
    */
-  | { type: "setupGithubCli"; action: "install" | "auth" }
+  | { type: "setupGithubCli"; action: "install" | "auth"; surface?: "settings" }
+  /**
+   * List this account's repositories for the clone combobox. Host runs
+   * `gh repo list --limit 200` once; the client filters. A remote may send
+   * this: the picker is how a phone clones, and it reveals nothing a clone
+   * of those URLs would not already reach.
+   */
+  | { type: "listGithubRepos" }
+  /**
+   * Sign out of GitHub on this machine. Same class as agent `logout`: desk
+   * remotes must not revoke a credential every surface shares; a cloud
+   * machine has no other surface, so CLOUD_DISPOSITION admits it there.
+   */
+  | { type: "githubSignOut" }
+  /**
+   * Store a pasted GitHub token via `gh auth login --with-token`. The token
+   * is a secret: the host must never echo it, log it, or put it in state the
+   * webview can read. A remote may send this — a cloud machine is exactly
+   * where a fine-grained token is the narrower credential to be holding.
+   */
+  | { type: "githubLoginWithToken"; token: string }
   // `panel-right` / `panel-bottom` dock the panel on that edge before revealing;
   // plain `panel` leaves the layout alone (view-move.ts § panelPositionFor).
   //
@@ -1157,7 +1219,7 @@ export type WebviewMsg =
 // error). The runtime arrays are just the keys, so they can never drift from the
 // union without failing the build.
 const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
-  initialState: true, moveViewHint: true, welcomeTips: true, projectSetup: true, providerState: true, mcpServers: true, mcpConnectors: true, routines: true, codexInstallProgress: true, planModeAvailability: true, showThinking: true, appPurpose: true, fontScale: true, grokUpdateStatus: true, updateAvailable: true, updateReady: true, telemetryEnabled: true, thumbsFeedback: true,
+  initialState: true, moveViewHint: true, welcomeTips: true, projectSetup: true, githubState: true, githubRepos: true, providerState: true, mcpServers: true, mcpConnectors: true, routines: true, codexInstallProgress: true, planModeAvailability: true, showThinking: true, appPurpose: true, fontScale: true, grokUpdateStatus: true, updateAvailable: true, updateReady: true, telemetryEnabled: true, thumbsFeedback: true,
   initialized: true, cliUpdating: true, session: true, sessionName: true, modelChanged: true,
   modeChanged: true, openModePopover: true, voiceState: true, voiceConfigured: true,
   voicePartial: true, voiceSubmit: true, voiceTranscript: true, voiceError: true,
@@ -1180,7 +1242,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   ready: true, remotePreferences: true, send: true, newSession: true, cancel: true, pickModel: true,
   setMode: true, removeChip: true, toggleChip: true, openFile: true, showInFolder: true, openUrl: true,
   openText: true, openDiff: true, exportExpr: true, setEffort: true, openGlobalConfig: true,
-  addProjectFolder: true, removeProjectFolder: true, createProject: true, cloneProject: true, setupGithubCli: true,
+  addProjectFolder: true, removeProjectFolder: true, createProject: true, cloneProject: true, setupGithubCli: true, listGithubRepos: true, githubSignOut: true, githubLoginWithToken: true,
   openProjectConfig: true, listMcpServers: true, connectMcpConnector: true, disconnectMcpConnector: true,
   listRoutines: true, saveRoutine: true, deleteRoutine: true, setRoutinePaused: true, runRoutineNow: true, showLogs: true, toggleDevTools: true, openSettings: true, openSettingsSurface: true, closeSettingsSurface: true, dismissWelcomeTip: true, welcomeTipShown: true, moveView: true,
   setShowThinking: true, setAppPurpose: true, setExpandCommandOutputs: true, setSteerByDefault: true,

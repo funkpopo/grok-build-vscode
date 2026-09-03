@@ -236,6 +236,19 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   // can see it. Install still opens a terminal (package managers ask for
   // elevation). Signing in is not bound to a conversation.
   setupGithubCli: "full",
+  // One `gh repo list` for the clone combobox. Same reach as cloneProject:
+  // the URLs it returns are the URLs a clone would fetch. Not a keystroke
+  // path — the client fetches once and filters locally.
+  listGithubRepos: "full",
+  // Same class as agent logout: a phone must not revoke a credential every
+  // surface on a desk shares. CLOUD_DISPOSITION admits it on a cloud machine,
+  // where the remote is the only surface and a handed-on box otherwise has
+  // no remedy.
+  githubSignOut: "host-local",
+  // A pasted token is a secret crossing the relay, and that is the point of
+  // the advanced option on a machine we host: a fine-grained token can be
+  // scoped to one repository. The host stores nothing; gh does. Never echo.
+  githubLoginWithToken: "full",
   resumeSession: "view",
   renameSession: "view",
   // read-only workspace file-name lookup (the composer's @ popover)
@@ -508,6 +521,9 @@ export const REMOTE_REQUIRES_BOUND_SESSION: Record<WebviewMsg["type"], boolean> 
   createProject: false,
   cloneProject: false,
   setupGithubCli: false,
+  listGithubRepos: false,
+  githubSignOut: false,
+  githubLoginWithToken: false,
   resumeSession: false,
   renameSession: false,
   mentionQuery: true,
@@ -641,6 +657,7 @@ const TIER_RANK: Record<RemoteTier, number> = { "read-only": 0, propose: 1, full
  */
 const CLOUD_DISPOSITION: Partial<Record<WebviewMsg["type"], InboundDisposition>> = {
   logout: "full",
+  githubSignOut: "full",
 
   // Re-observing the accounts is host-local on a desk because a phone should
   // not be able to spawn CLI probes on somebody's laptop. On a cloud machine
@@ -862,6 +879,10 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   // the repo catalog delivers that, already trimmed to what this client may
   // reach. So there is no project data in the frame to authorize.
   projectSetup: "mirror",
+  // Connection snapshot and repo names for the clone picker. No token, no
+  // home path, no project cwd — the same class as providerState.
+  githubState: "mirror",
+  githubRepos: "mirror",
   showThinking: "mirror",
   appPurpose: "mirror",
   fontScale: "mirror",
@@ -991,6 +1012,8 @@ export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth>
   moveViewHint: "none",
   welcomeTips: "none",
   projectSetup: "none",
+  githubState: "none",
+  githubRepos: "none",
   showThinking: "none",
   appPurpose: "none",
   fontScale: "none",

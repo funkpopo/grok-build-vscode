@@ -1465,7 +1465,7 @@ describe("a cloud environment is its own desk", () => {
     // promised otherwise. Reversible put-away is the archive feature, not a
     // disposition override.
     expect([...promoted].sort()).toEqual([
-      "logout", "refreshProviders", "setTelemetryEnabled", "setThumbsFeedback",
+      "githubSignOut", "logout", "refreshProviders", "setTelemetryEnabled", "setThumbsFeedback",
     ]);
   });
 });

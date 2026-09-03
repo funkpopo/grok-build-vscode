@@ -68,21 +68,11 @@ function installOpener(h: Harness) {
 }
 
 describe("add project", () => {
-  it("offers naming and importing in Knowledge work, and says where cloning went", () => {
+  it("offers cloning in Knowledge work, at the top, the same as in Coding", () => {
     const h = boot();
     installOpener(h);
     openMenu(h);
-    // Cloning is a coding affordance, so it is absent here — and an absent
-    // thing explains nothing. Someone who came to clone a repository would
-    // otherwise find two options that are not it and no way to learn that the
-    // third is one setting away (owner, 2026-09-01).
-    expect(menuItems(h)).toEqual(["New project", "Import a folder", "Clone from GitHub?"]);
-    const hint = [...h.doc.querySelectorAll(".rail-menu-item")].at(-1);
-    expect(hint?.textContent).toContain("Coding mode");
-    // It ACTS: selecting it opens the setting rather than describing where it
-    // is. In this host that is the in-page overlay, not a host message.
-    click(h.window, hint!);
-    expect(h.doc.querySelector("#settings-overlay, .settings-overlay")).toBeTruthy();
+    expect(menuItems(h)).toEqual(["Clone from GitHub", "New project", "Import a folder"]);
   });
 
   it("adds cloning in Coding, at the top, and takes nothing away", () => {
@@ -98,11 +88,9 @@ describe("add project", () => {
     openMenu(h);
     const descriptions = [...h.doc.querySelectorAll(".rail-menu-desc")].map((el) => el.textContent);
     expect(descriptions).toEqual([
+      "Pick a repository, or type a URL.",
       "Name it. We make the folder.",
       "Choose one you already have.",
-      // The hint earns a description for the same reason the others do: the
-      // label alone says what it is, not what happens when you pick it.
-      "Switch to Coding mode in the settings.",
     ]);
   });
 
@@ -138,7 +126,10 @@ describe("add project", () => {
     const h = boot();
     installOpener(h);
     openMenu(h);
-    click(h.window, [...h.doc.querySelectorAll(".rail-menu-item")][0]);
+    const newItem = [...h.doc.querySelectorAll(".rail-menu-item")].find((el) =>
+      el.textContent?.includes("New project"),
+    )!;
+    click(h.window, newItem);
     expect(form(h)).toBeTruthy();
     expect(dest(h)).toBe("~/Grok Build/…");
     input(h).value = "Q3 Positioning";
@@ -440,5 +431,74 @@ describe("add project", () => {
     h.doc.addEventListener("keydown", () => { reached = true; });
     h.doc.dispatchEvent(new h.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     expect(reached).toBe(true);
+  });
+
+  const optionLabels = (h: Harness) =>
+    [...h.doc.querySelectorAll(".add-project-option")].map((el) => el.textContent || "");
+
+  it("filters the fetched list locally and offers a typed URL as a row", () => {
+    const h = boot({ coding: true });
+    installOpener(h);
+    openMenu(h);
+    click(h.window, [...h.doc.querySelectorAll(".rail-menu-item")][0]);
+    dispatch(h.window, {
+      type: "githubState",
+      github: { connected: true, login: "phuryn", cliPresent: true },
+    });
+    dispatch(h.window, {
+      type: "githubRepos",
+      repos: [
+        { nameWithOwner: "phuryn/afkpilot", isPrivate: false, updatedAt: "2026-09-03T21:55:15Z" },
+        { nameWithOwner: "phuryn/secret", isPrivate: true, updatedAt: "2026-09-01T00:00:00Z" },
+      ],
+    });
+    expect(optionLabels(h).join("\n")).toMatch(/afkpilot/);
+    expect(optionLabels(h).join("\n")).toMatch(/secret/);
+    input(h).value = "afk";
+    input(h).dispatchEvent(new h.window.Event("input", { bubbles: true }));
+    expect(optionLabels(h).join("\n")).toMatch(/afkpilot/);
+    expect(optionLabels(h).join("\n")).not.toMatch(/secret/);
+    input(h).value = "https://github.com/you/other";
+    input(h).dispatchEvent(new h.window.Event("input", { bubbles: true }));
+    expect(optionLabels(h).some((t) => t.includes("Clone https://github.com/you/other"))).toBe(true);
+    click(h.window, h.doc.querySelector(".add-project-option")!);
+    expect(h.posted).toContainEqual({ type: "cloneProject", url: "https://github.com/you/other" });
+  });
+
+  it("keeps the public URL path open when GitHub is not connected", () => {
+    const h = boot({ coding: true });
+    installOpener(h);
+    openMenu(h);
+    click(h.window, [...h.doc.querySelectorAll(".rail-menu-item")][0]);
+    dispatch(h.window, {
+      type: "githubState",
+      github: { connected: false, cliPresent: true },
+    });
+    expect(optionLabels(h).some((t) => t.includes("Connect GitHub to see your repositories"))).toBe(true);
+    input(h).value = "https://github.com/phuryn/afkpilot";
+    input(h).dispatchEvent(new h.window.Event("input", { bubbles: true }));
+    expect(optionLabels(h).some((t) => t.includes("Clone https://github.com/phuryn/afkpilot"))).toBe(true);
+    expect(submit(h).disabled).toBe(false);
+    click(h.window, submit(h));
+    expect(h.posted).toContainEqual({
+      type: "cloneProject",
+      url: "https://github.com/phuryn/afkpilot",
+    });
+  });
+
+  it("runs Connect from the not-connected row", () => {
+    const h = boot({ coding: true });
+    installOpener(h);
+    openMenu(h);
+    click(h.window, [...h.doc.querySelectorAll(".rail-menu-item")][0]);
+    dispatch(h.window, {
+      type: "githubState",
+      github: { connected: false, cliPresent: true },
+    });
+    const connect = [...h.doc.querySelectorAll(".add-project-option")].find((el) =>
+      el.textContent?.includes("Connect GitHub"),
+    )!;
+    click(h.window, connect);
+    expect(h.posted).toContainEqual({ type: "setupGithubCli", action: "auth" });
   });
 });

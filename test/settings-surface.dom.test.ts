@@ -1901,6 +1901,85 @@ describe("Providers refresh", () => {
   });
 });
 
+describe("GitHub connection row", () => {
+  const githubCaps = {
+    hostCaps: {
+      relocateView: false, showOutput: false, toggleDevTools: true,
+      remoteGithubSignIn: true,
+    },
+  };
+
+  it("stays hidden until the githubState frame arrives", () => {
+    const { root } = mountAt("providers");
+    expect(root.querySelector('[data-id="githubConnection"]')).toBeNull();
+  });
+
+  it("renders not connected, connected, and connected-but-broken", () => {
+    const missing = mountAt("providers", {
+      snapshot: { githubState: { connected: false, cliPresent: true } },
+    });
+    const missingRow = missing.root.querySelector('[data-id="githubConnection"]') as HTMLElement;
+    expect(missingRow).toBeTruthy();
+    expect(missingRow.textContent).toMatch(/Connect GitHub/);
+    expect(missingRow.querySelector("button")?.textContent).toBe("Connect");
+
+    const ok = mountAt("providers", {
+      snapshot: {
+        githubState: { connected: true, login: "phuryn", cliPresent: true },
+      },
+    });
+    const okRow = ok.root.querySelector('[data-id="githubConnection"]') as HTMLElement;
+    expect(okRow.textContent).toMatch(/@phuryn/);
+    expect(okRow.querySelector("button")?.textContent).toBe("Sign out");
+
+    const broken = mountAt("providers", {
+      snapshot: {
+        githubState: { connected: false, envTokenInForce: true, error: true, cliPresent: true },
+      },
+    });
+    const brokenRow = broken.root.querySelector('[data-id="githubConnection"]') as HTMLElement;
+    expect(brokenRow.textContent).toMatch(/GH_TOKEN/);
+    expect(brokenRow.textContent).toMatch(/not working/);
+    expect(brokenRow.querySelector("button")?.textContent).toBe("Connect");
+  });
+
+  it("lets a remote connect when the host advertised remoteGithubSignIn, and signs out only on a cloud host", () => {
+    const disconnected = mountAt("providers", {
+      env: { isRemote: true, ...githubCaps },
+      snapshot: { githubState: { connected: false, cliPresent: true } },
+    });
+    const connect = disconnected.root.querySelector('[data-id="githubConnectionRemote"] button');
+    expect(connect?.textContent).toBe("Connect");
+    (connect as HTMLButtonElement).click();
+    expect(disconnected.posted).toContainEqual({
+      type: "setupGithubCli", action: "auth", surface: "settings",
+    });
+
+    const deskRemote = mountAt("providers", {
+      env: { isRemote: true, ...githubCaps },
+      snapshot: {
+        githubState: { connected: true, login: "phuryn", cliPresent: true },
+      },
+    });
+    expect(deskRemote.root.querySelector('[data-id="githubConnectionRemote"]')).toBeNull();
+    expect(deskRemote.root.querySelector('[data-id="githubConnectionStatus"]')).toBeTruthy();
+
+    const cloud = mountAt("providers", {
+      env: {
+        isRemote: true,
+        hostCaps: { ...githubCaps.hostCaps, remoteAgentSignOut: true },
+      },
+      snapshot: {
+        githubState: { connected: true, login: "phuryn", cliPresent: true },
+      },
+    });
+    const signOut = cloud.root.querySelector('[data-id="githubConnectionRemote"] button');
+    expect(signOut?.textContent).toBe("Sign out");
+    (signOut as HTMLButtonElement).click();
+    expect(cloud.posted).toContainEqual({ type: "githubSignOut" });
+  });
+});
+
 describe("settings update() skips an unchanged snapshot", () => {
   it("does not rebuild the DOM when the displayed snapshot is identical", () => {
     const { root, surface } = mountAt("general", { snapshot: { appPurpose: "coding" } });

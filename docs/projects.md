@@ -68,14 +68,24 @@ What happens next differs by app, and deliberately:
 
 ## Clone from GitHub
 
-Paste any `https://` or `git@` repository URL. The folder name comes from the
-URL — `https://github.com/you/project` becomes `~/AFK Pilot/project` — and is
-shown before you commit to it.
+Cloning is available in every mode. The form is one field: type to filter the
+repositories this machine can see, or type a URL / `owner/repo` and clone that.
+The folder name comes from the repository — `https://github.com/you/project`
+becomes `~/AFK Pilot/project` — and is shown before you commit to it. A name
+that is already taken asks for a different folder.
+
+**GitHub is a connection**, like Grok or Codex. Settings → Providers shows
+whether this machine is signed in and as whom. Connect from that row, or from
+the clone form's "Connect GitHub to see your repositories" row. Public URLs
+still clone without signing in.
+
+A pasted token is an advanced option on the Settings row. It is sent once to
+`gh auth login --with-token` and never stored by us; `gh` owns it after that.
+Do not put a token in the clone URL.
 
 **Credentials are git's own.** Whatever you already have set up — a credential
-helper, an SSH key, `gh auth login` — is what authenticates. Nothing is minted,
-stored, or sent anywhere by the extension or the relay. Public repositories need
-nothing at all.
+helper, an SSH key, `gh auth login` — is what authenticates. Public repositories
+need nothing at all.
 
 ### When a private repository fails
 

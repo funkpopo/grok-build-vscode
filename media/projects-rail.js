@@ -112,6 +112,8 @@
      *  from `projectSetup`. The form shows the destination as you type. */
     projectRoot: "",
     projectGithub: null,
+    githubState: null,
+    githubRepos: null,
   };
 
   let menuEl = null;
@@ -1004,9 +1006,7 @@
       // Same hint as the chat rail, and the same rule: it acts rather than
       // instructs. This view has no settings overlay of its own, so it asks the
       // host for the editor tab.
-      if (id === "clone-needs-coding") {
-        vscode.postMessage({ type: "openSettingsSurface", category: "general" });
-      } else if (id === "import") vscode.postMessage({ type: "addProjectFolder" });
+      if (id === "import") vscode.postMessage({ type: "addProjectFolder" });
       else openAddProjectForm(id);
     };
     // One way in is a click, not a menu that asks permission to be a click.
@@ -1047,10 +1047,10 @@
     const api = helpers.addProjectForm({
       kind,
       root: state.projectRoot,
-      onSubmit: (value) => {
+      onSubmit: (value, extra) => {
         vscode.postMessage(
           kind === "clone"
-            ? { type: "cloneProject", url: value }
+            ? { type: "cloneProject", url: value, ...(extra && extra.name ? { name: extra.name } : {}) }
             : { type: "createProject", name: value },
         );
       },
@@ -1059,6 +1059,12 @@
         type: "setupGithubCli",
         action: fix === "install-gh" ? "install" : "auth",
       }),
+      onConnect: () => vscode.postMessage({ type: "setupGithubCli", action: "auth" }),
+      onRequestRepos: () => vscode.postMessage({ type: "listGithubRepos" }),
+      githubState: state.githubState || undefined,
+      repos: state.githubRepos,
+      touch: typeof window.matchMedia === "function"
+        && window.matchMedia("(hover: none), (pointer: coarse)").matches,
     });
     if (!api) return;
     const scrim = document.createElement("div");
@@ -1075,7 +1081,12 @@
       closeAddProjectForm();
     };
     document.addEventListener("keydown", addProjectFormKeydown, true);
-    api.update({ root: state.projectRoot, github: state.projectGithub || undefined });
+    api.update({
+      root: state.projectRoot,
+      github: state.projectGithub || undefined,
+      githubState: state.githubState || undefined,
+      repos: state.githubRepos,
+    });
     api.focus();
   }
 
@@ -1623,7 +1634,6 @@
         render();
         break;
       case "appPurpose":
-        // Only the Add project menu reads this here — Coding gains cloning.
         state.appPurpose = msg.value === "coding" ? "coding" : "knowledge";
         break;
       case "projectSetup":
@@ -1638,7 +1648,26 @@
         if (msg.busy) state.projectGithub = null;
         else if (msg.github && typeof msg.github === "object") state.projectGithub = msg.github;
         else if (msg.error) state.projectGithub = null;
-        if (addProjectFormApi) addProjectFormApi.update({ ...msg, github: state.projectGithub || msg.github });
+        if (addProjectFormApi) addProjectFormApi.update({
+          ...msg,
+          github: state.projectGithub || msg.github,
+          githubState: state.githubState || undefined,
+          repos: state.githubRepos,
+        });
+        break;
+      case "githubState":
+        state.githubState = msg.github && typeof msg.github === "object" ? msg.github : null;
+        if (addProjectFormApi) addProjectFormApi.update({ githubState: state.githubState });
+        break;
+      case "githubRepos":
+        state.githubRepos = Array.isArray(msg.repos) ? msg.repos : [];
+        if (addProjectFormApi) {
+          addProjectFormApi.update({
+            repos: state.githubRepos,
+            reposTruncated: msg.truncated === true,
+            reposError: typeof msg.error === "string" ? msg.error : "",
+          });
+        }
         break;
       case "repos": {
         const leaving = state.currentCwd;
