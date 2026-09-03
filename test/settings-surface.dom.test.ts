@@ -2049,3 +2049,59 @@ describe("settings switch knob theme", () => {
     expect(match![0]).toMatch(/--vscode-/);
   });
 });
+
+/**
+ * The GitHub token row is a CLOUD affordance, and the gate is not the same one
+ * the Connect row uses.
+ *
+ * `setupGithubCli` (the device flow) is reachable from any remote, because an
+ * injected one cannot be completed — a person has to approve the code at
+ * GitHub. A pasted token has no such step: the token IS the credential, so the
+ * host admits `githubLoginWithToken` only from a cloud machine.
+ *
+ * Showing the row to a remote driving an ordinary laptop would therefore take
+ * the paste, send the credential across the relay, and have the host drop it in
+ * silence. The credential travelling for nothing is the worse half. This pins
+ * the client gate to the same cloud signal the host uses.
+ */
+describe("settings: the GitHub token row follows the host's cloud gate", () => {
+  const S = loadSettings();
+  const disconnected = (env: Record<string, unknown>) =>
+    S.visibleRows(
+      S.defaultSnapshot({ githubState: { connected: false, cliPresent: true } }),
+      S.defaultEnv(env),
+    ).some((r) => r.id === "githubToken");
+
+  it("offers it locally, where there is also a terminal", () => {
+    expect(disconnected({ isRemote: false })).toBe(true);
+  });
+
+  it("offers it to a remote on a cloud machine — its only way in", () => {
+    expect(disconnected({
+      isRemote: true,
+      hostCaps: { remoteGithubSignIn: true, remoteAgentSignOut: true },
+    })).toBe(true);
+  });
+
+  it("withholds it from a remote driving an ordinary laptop", () => {
+    // remoteGithubSignIn is true here on purpose: the Connect row IS available,
+    // and reusing that capability for the token row is the exact mistake.
+    expect(disconnected({
+      isRemote: true,
+      hostCaps: { remoteGithubSignIn: true, remoteAgentSignOut: false },
+    })).toBe(false);
+  });
+
+  it("withholds it once GitHub is connected, on every surface", () => {
+    const connected = (env: Record<string, unknown>) =>
+      S.visibleRows(
+        S.defaultSnapshot({ githubState: { connected: true, login: "octocat", cliPresent: true } }),
+        S.defaultEnv(env),
+      ).some((r) => r.id === "githubToken");
+    expect(connected({ isRemote: false })).toBe(false);
+    expect(connected({
+      isRemote: true,
+      hostCaps: { remoteGithubSignIn: true, remoteAgentSignOut: true },
+    })).toBe(false);
+  });
+});
