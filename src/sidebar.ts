@@ -12732,6 +12732,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // turn, drops the client and disposes it, so by the time the files go there
     // is nothing left that could write them again.
     const wasFocused = !!live && live === this.focused;
+    // Read again after the teardown, never from the line above: see the note
     const visibleEntries = this.buildSessionsList(
       cwd,
       { limit: Number.MAX_SAFE_INTEGER },
@@ -12837,7 +12838,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // when that list is empty. Watchers share that same home. A viewer of a
     // different conversation is not moved.
     const neighbour = neighbourAfterDelete(visibleEntries, id);
-    if (wasFocused) {
+    // `wasFocused` was taken BEFORE the provider teardown, and a later round
+    // showed why that is not enough: a delete that was not focused when it
+    // started can finish after the view has navigated ONTO the very
+    // conversation being deleted, and the stale snapshot then says “not mine”
+    // and leaves the view attached to a disposed session. Either being true
+    // means the view needs re-homing, so ask both, now.
+    const viewIsOnDeleted = wasFocused || this.viewIsOnDeleted(live, id);
+    if (viewIsOnDeleted) {
       // ASK THE ONLY QUESTION THAT MATTERS: is the view still on the
       // conversation we just deleted?
       //
@@ -12853,9 +12861,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // pointing at a deleted, disposed session, where the view looks attached
       // and the next send tries to resume an id that is gone. Anywhere else the
       // person ends up is fine — the neighbour, or whatever they clicked while
-      // this was finishing. So test THAT, by identity, and nothing else.
+      // this was finishing. So test THAT, and nothing else.
       if (neighbour) await this.openSession(neighbour.id, neighbour.cwd);
-      if (this.focused === live) {
+      if (this.viewIsOnDeleted(live, id)) {
         this.focused = this.newLocalSession();
         // Neighbour rows already live in this project. A minted replacement
         // does not — without this it starts in the VS Code workspace folder
@@ -12870,7 +12878,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     let home =
       neighbour
         ? this.liveSessionById(neighbour.id)
-        : wasFocused ? this.focused : undefined;
+        : viewIsOnDeleted ? this.focused : undefined;
     for (const watcher of watchers) {
       if (home) {
         this.dropRemoteVoice(watcher);
@@ -16283,6 +16291,22 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // own state, not an inference from a list field that means nothing here.
     // So the reuse is narrower than first written, and only says what it knows.
     return undefined;
+  }
+
+  /**
+   * Is the local view sitting on the conversation that was just deleted?
+   *
+   * By object identity OR by id, because both happen: the ordinary case is
+   * that the deleted session IS the focused one, and the awkward case is that
+   * the view moved onto it while the delete was in flight, giving a different
+   * `Session` object carrying the same id.
+   *
+   * Asked at the moment of the decision. A snapshot taken before the provider
+   * teardown answers a question about a view that has since moved.
+   */
+  private viewIsOnDeleted(live: Session | undefined, id: string): boolean {
+    if (live && this.focused === live) return true;
+    return !!id && this.focused.activeSessionId === id;
   }
 
   private newLocalSession(): Session {

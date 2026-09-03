@@ -150,7 +150,10 @@ describe("cross-project fallout of following the selection", () => {
     // Delete the active conversation while the rail sits on project B and the
     // window has A open: the replacement used to start in A, silently, with
     // history and the rail still reading B.
-    const at = sidebar.indexOf("if (wasFocused) {");
+    // Renamed from `wasFocused`: the snapshot taken before the provider
+    // teardown could not see a view that navigated onto the conversation
+    // while it was being deleted. The cwd rule this test guards is unchanged.
+    const at = sidebar.indexOf("if (viewIsOnDeleted) {");
     expect(at).toBeGreaterThan(-1);
     const arm = sidebar.slice(at, sidebar.indexOf("}", sidebar.indexOf("startSession()", at)));
     expect(arm).toMatch(/this\.setSessionCwd\(\s*this\.focused,\s*this\.historyCwdFor\("local"\)/);

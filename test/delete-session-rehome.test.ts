@@ -309,6 +309,22 @@ describe("what the reuse and neighbour rules refuse to assume", () => {
     expect(body).not.toContain("list.entries");
   });
 
+  it("asks whether the view is on the deleted row AFTER the teardown", () => {
+    // `wasFocused` is captured before the provider teardown. A delete that was
+    // not focused when it started can finish after the view has navigated ONTO
+    // the conversation being deleted — a different Session object carrying the
+    // same id — and the stale snapshot then says "not mine" and leaves the view
+    // attached to a disposed session, whose next send resumes a dead id.
+    const at = src.indexOf("private viewIsOnDeleted");
+    expect(at).toBeGreaterThan(-1);
+    const body = src.slice(at, src.indexOf("private newLocalSession", at));
+    // Identity for the ordinary case, id for the one that moved.
+    expect(body).toContain("this.focused === live");
+    expect(body).toContain("this.focused.activeSessionId === id");
+    // And the decision must consult it, not the snapshot alone.
+    expect(src).toContain("const viewIsOnDeleted = wasFocused || this.viewIsOnDeleted(live, id);");
+  });
+
   it("mints only when the view is still on the deleted conversation", () => {
     // Three rounds hit this tail and the first two fixes were exact inverses.
     // Comparing `this.focused` to the neighbour minted a blank over a
@@ -324,7 +340,7 @@ describe("what the reuse and neighbour rules refuse to assume", () => {
     const at = src.indexOf("ASK THE ONLY QUESTION THAT MATTERS");
     expect(at).toBeGreaterThan(-1);
     const branch = src.slice(at, at + 1800);
-    expect(branch).toContain("if (this.focused === live) {");
+    expect(branch).toContain("if (this.viewIsOnDeleted(live, id)) {");
     expect(branch).toContain("await this.startSession();");
     // Neither discarded proxy may come back.
     expect(src).not.toContain("this.focused.activeSessionId !== neighbour.id");
