@@ -249,17 +249,18 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   // the advanced option on a machine we host: a fine-grained token can be
   // scoped to one repository. The host stores nothing; gh does. Never echo.
   //
-  // HOST-LOCAL on a desk, admitted on a cloud machine by CLOUD_DISPOSITION —
-  // the same shape as githubSignOut, and it is not symmetry for its own sake.
-  // `setupGithubCli` is reachable from a remote because an injected device-code
-  // flow CANNOT be completed: GitHub makes a person approve the code. A token
-  // needs no approval, because the token IS the credential. So a relay that had
-  // been compromised could log a desk laptop in as somebody else — gh makes the
-  // new account active and `setup-git` points git at it — and every later
-  // GitHub operation on that machine would run as them. A desk has a terminal,
-  // which is the whole reason it does not need this path; a cloud machine has
-  // no terminal and no other way in.
-  githubLoginWithToken: "host-local",
+  // `full`, and deliberately NOT cloud-gated — a phone driving a desk may paste
+  // one too. This was briefly host-local, on a review finding that a compromised
+  // relay could inject a token and make a desk laptop act as somebody else. The
+  // mechanism is real; the reasoning was not, because it never asked what the
+  // attacker already had. A remote at this tier can `send` a prompt AND answer
+  // `permissionAnswer`, so it can already run commands here with the
+  // credentials sitting on the machine — including pushing this repository
+  // somewhere using the user's OWN gh login. Injecting a foreign token grants
+  // strictly less than that and mostly just breaks their pushes, which they
+  // notice. Gating it bought nothing and cost the fine-grained token — the
+  // narrowest credential we can offer — on the surface AFK Pilot is named for.
+  githubLoginWithToken: "full",
   resumeSession: "view",
   renameSession: "view",
   // read-only workspace file-name lookup (the composer's @ popover)
@@ -669,9 +670,6 @@ const TIER_RANK: Record<RemoteTier, number> = { "read-only": 0, propose: 1, full
 const CLOUD_DISPOSITION: Partial<Record<WebviewMsg["type"], InboundDisposition>> = {
   logout: "full",
   githubSignOut: "full",
-  // The advanced token path exists FOR this surface: no terminal, and a
-  // fine-grained token is the smallest credential a hosted machine can hold.
-  githubLoginWithToken: "full",
 
   // Re-observing the accounts is host-local on a desk because a phone should
   // not be able to spawn CLI probes on somebody's laptop. On a cloud machine

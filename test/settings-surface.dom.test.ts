@@ -2051,20 +2051,21 @@ describe("settings switch knob theme", () => {
 });
 
 /**
- * The GitHub token row is a CLOUD affordance, and the gate is not the same one
- * the Connect row uses.
+ * The GitHub token row follows the same gate as the Connect row beside it:
+ * can this host sign in to GitHub for a remote at all?
  *
- * `setupGithubCli` (the device flow) is reachable from any remote, because an
- * injected one cannot be completed — a person has to approve the code at
- * GitHub. A pasted token has no such step: the token IS the credential, so the
- * host admits `githubLoginWithToken` only from a cloud machine.
+ * It was briefly cloud-only, to match a host policy that was itself briefly
+ * cloud-only. Both came back out — a remote that could inject a token can
+ * already drive the agent and approve its tool calls on that machine, so the
+ * gate protected nothing while removing the narrowest credential we can offer
+ * from a phone driving a desk.
  *
- * Showing the row to a remote driving an ordinary laptop would therefore take
- * the paste, send the credential across the relay, and have the host drop it in
- * silence. The credential travelling for nothing is the worse half. This pins
- * the client gate to the same cloud signal the host uses.
+ * What these pin is that the CLIENT gate matches the HOST's. Whichever way that
+ * decision goes, offering a row the host will refuse is the one shape that is
+ * always wrong: it takes the paste and sends a credential across the relay for
+ * nothing.
  */
-describe("settings: the GitHub token row follows the host's cloud gate", () => {
+describe("settings: the GitHub token row matches what the host will accept", () => {
   const S = loadSettings();
   const disconnected = (env: Record<string, unknown>) =>
     S.visibleRows(
@@ -2083,12 +2084,19 @@ describe("settings: the GitHub token row follows the host's cloud gate", () => {
     })).toBe(true);
   });
 
-  it("withholds it from a remote driving an ordinary laptop", () => {
-    // remoteGithubSignIn is true here on purpose: the Connect row IS available,
-    // and reusing that capability for the token row is the exact mistake.
+  it("offers it to a phone driving a desk too — the host accepts it there", () => {
     expect(disconnected({
       isRemote: true,
       hostCaps: { remoteGithubSignIn: true, remoteAgentSignOut: false },
+    })).toBe(true);
+  });
+
+  it("withholds it from a remote whose host cannot sign in to GitHub at all", () => {
+    // The honest case: an older host drops `setupGithubCli` and would drop this
+    // too, so the row would be a paste that goes nowhere.
+    expect(disconnected({
+      isRemote: true,
+      hostCaps: { remoteGithubSignIn: false },
     })).toBe(false);
   });
 

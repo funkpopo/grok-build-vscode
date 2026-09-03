@@ -1464,15 +1464,13 @@ describe("a cloud environment is its own desk", () => {
     // already exists — so Hide there was one-way, under a confirmation that
     // promised otherwise. Reversible put-away is the archive feature, not a
     // disposition override.
-    // githubLoginWithToken joined for the same "no desk to do it from" reason,
-    // and it is the one entry here that is a SECRET rather than a preference.
-    // It is promoted rather than plainly `full` because a token needs no
-    // approval at GitHub the way the device-code flow does — so on a desk an
-    // injected paste would silently make somebody else's account active, while
-    // on a cloud machine there is no terminal and no other route in.
+    // githubLoginWithToken was briefly promoted here and is deliberately NOT:
+    // it is plainly `full`, because a remote that could inject a token can
+    // already `send` and answer `permissionAnswer` on that machine, so the
+    // promotion protected nothing and removed the paste path from a phone
+    // driving a desk.
     expect([...promoted].sort()).toEqual([
-      "githubLoginWithToken", "githubSignOut", "logout", "refreshProviders",
-      "setTelemetryEnabled", "setThumbsFeedback",
+      "githubSignOut", "logout", "refreshProviders", "setTelemetryEnabled", "setThumbsFeedback",
     ]);
   });
 });
