@@ -1119,6 +1119,32 @@ export function commandOutputForToolCall(
  * the agent is still rebindable. The host
  * uses this to fall back to a restart instead of surfacing the raw error.
  */
+/**
+ * True when a resume failed because the thread holds NOTHING — not because
+ * anything went wrong.
+ *
+ * Claude writes a thread file the moment a prompt is submitted, but only
+ * metadata: a `last-prompt` line and an `atis-latch`. Conversation entries
+ * arrive when a turn actually records something. If none ever does, the file
+ * exists and parses and contains zero messages — and the SDK's loader ends
+ * `if (!o || o.length === 0) return null`, so a message-less thread is
+ * reported identically to a missing one: `-32002 Resource not found`.
+ *
+ * Measured on a real machine (2026-09-03): the failing thread was 242 bytes,
+ * two metadata lines, zero user and zero assistant entries, sitting beside
+ * two healthy ones of ~20 KB. So a conversation whose first turn never
+ * recorded anything is UNRESUMABLE FOR EVER, and the person was shown the
+ * adapter's words plus a raw UUID for what is simply an empty conversation.
+ *
+ * Keyed on the JSON-RPC code, which is a protocol contract
+ * (`RequestError.resourceNotFound` — sdk/dist/jsonrpc.js), never on the
+ * prose. Matching “not found” as TEXT is how a generic message starts
+ * swallowing real faults.
+ */
+export function isEmptyThreadError(err: any): boolean {
+  return err?.code === -32002 || err?.data?.code === -32002;
+}
+
 export function isIncompatibleAgentError(err: any): boolean {
   if (err?.data?.code === "MODEL_SWITCH_INCOMPATIBLE_AGENT") return true;
   // Fallback if a future CLI keeps the message but drops the structured code.

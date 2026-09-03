@@ -16,6 +16,7 @@ import {
   extractPromptUsage,
   gateZeroTokenMeta,
   isMediaGenToolCall,
+  isEmptyThreadError,
   isIncompatibleAgentError,
   isMethodNotFoundError,
   isAuthErrorText,
@@ -602,6 +603,36 @@ describe("response builders", () => {
       method: "session/new",
       params: { cwd: "." },
     });
+  });
+});
+
+describe("isEmptyThreadError", () => {
+  // Claude writes a thread file when a prompt is submitted, but only metadata
+  // (`last-prompt`, `atis-latch`). If the first turn never records anything the
+  // file exists with ZERO messages, and the SDK loader ends
+  // `if (!o || o.length === 0) return null` — so an empty thread and a missing
+  // one are reported identically, as -32002. Measured on a real machine: 242
+  // bytes, two lines, no user and no assistant entries.
+  it("recognises the resource-not-found code", () => {
+    expect(isEmptyThreadError({ code: -32002, message: "Resource not found: abc" })).toBe(true);
+  });
+
+  it("recognises it when the code is carried in data", () => {
+    expect(isEmptyThreadError({ data: { code: -32002 } })).toBe(true);
+  });
+
+  it("does NOT match on the words alone", () => {
+    // The whole point of keying on the code. A generic message matched as TEXT
+    // starts swallowing real faults — which is exactly how a failed delete
+    // became an unusable conversation earlier in this codebase.
+    expect(isEmptyThreadError({ message: "Resource not found: abc" })).toBe(false);
+    expect(isEmptyThreadError({ message: "not found" })).toBe(false);
+  });
+
+  it("leaves other failures alone", () => {
+    expect(isEmptyThreadError({ code: -32603, message: "Internal error" })).toBe(false);
+    expect(isEmptyThreadError(new Error("spawn ENOENT"))).toBe(false);
+    expect(isEmptyThreadError(undefined)).toBe(false);
   });
 });
 
