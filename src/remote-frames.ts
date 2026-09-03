@@ -727,6 +727,26 @@ export function nextBackoffMs(prev: number): number {
 }
 
 /**
+ * Did this connection last long enough to call it healthy?
+ *
+ * Backoff used to reset when the socket OPENED, which sounds right and is
+ * not: it means the delay can only grow while connections FAIL, and never
+ * against one that succeeds and then dies — exactly the case it exists to
+ * damp. A host whose socket opened and dropped therefore retried once a
+ * second for ever, and every attempt costs the relay a database lookup.
+ * Production measured 65,792,061 of them against 23,832 for the
+ * per-connection ownership query, and sat at 90-95% CPU for a week.
+ *
+ * The bar is `MAX_BACKOFF_MS` rather than a new constant, and it says
+ * something meaningful: a connection that outlived the longest delay we
+ * would ever wait was working. Anything shorter is a flap, and a flap must
+ * keep the delay it has earned.
+ */
+export function connectionWasHealthy(connectedMs: number): boolean {
+  return connectedMs >= MAX_BACKOFF_MS;
+}
+
+/**
  * Is this host an AFK Pilot cloud environment?
  *
  * One env var, read in one place, so "am I hosted" is never re-derived from
