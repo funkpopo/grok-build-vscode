@@ -87,7 +87,7 @@ import { VoiceRecorder, transcribeAudio, resolveWindowsAudioDevice } from "./voi
 import { PcmVoiceStreamer, VoiceStreamer } from "./voice-streamer";
 import { summarizeForSpeech } from "./speech-summary";
 import type { PromptResultMeta, PromptUsage, SessionInfoContext } from "./acp-dispatch";
-import { MediaRef, adapterCompactSignal, adapterContextOccupancy, agentTimestampMsFromMeta, autoCompactStartedNote, childStreamFromRoute, commandOutputForToolCall, commandOutputFromLiveTerminal, contextUsedFromCompactNotification, enforceCompleteSessionCost, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isEmptyThreadError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, occupancyFromAdapterTurn, parseSessionInfoContext, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sessionInfoCacheFresh, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement, type UpdateRoute } from "./acp-dispatch";
+import { MediaRef, adapterCompactSignal, adapterContextOccupancy, agentTimestampMsFromMeta, autoCompactStartedNote, childStreamFromRoute, commandOutputForToolCall, commandOutputFromLiveTerminal, contextUsedFromCompactNotification, enforceCompleteSessionCost, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isRateLimitError, isSubagentLifecycleUpdate, occupancyFromAdapterTurn, parseSessionInfoContext, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sessionInfoCacheFresh, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement, type UpdateRoute } from "./acp-dispatch";
 import { createMcpPrepareState, prepareMcpToolCall } from "./mcp-tool";
 import { modeToRemember, startsInYolo } from "./mode-prefs";
 import { beginAuthRecovery, oauthShadowsXaiApiKey } from "./auth-recovery";
@@ -9682,42 +9682,20 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
         const loadAt = clock.now();
         let replayAt = 0;
-        // Set when the thread turned out to hold nothing — see below.
-        let threadWasEmpty = false;
         await this.replayLoadedHistory(session, async () => {
           try {
             await client.loadSession(resumeId, defaultModel || undefined);
           } catch (e) {
-            // AN EMPTY CONVERSATION IS NOT A FAILURE.
-            //
-            // A thread whose first turn never recorded anything loads as
-            // `-32002 Resource not found`, and the host read that out as
-            // “Failed to start Claude: Resource not found: <uuid>” — an
-            // adapter's words and an identifier meaningless to the person,
-            // for a conversation that is simply empty. Nothing was lost,
-            // because nothing was ever in it.
-            //
-            // Start a fresh session below and keep the row's name, so it
-            // opens as what it is. Deliberately NOT bound to `resumeId`:
-            // the load failed, so no session exists on the agent side for
-            // that id, and a prompt against it would fail too.
-            if (isEmptyThreadError(e)) {
-              threadWasEmpty = true;
-              this.host.appendLine(
-                `[resume] ${resumeId} holds no messages; opening it as an empty conversation`,
-              );
-            } else {
-              // A resumed session's agent is fixed by its history, so a cross-agent
-              // default model (e.g. a Composer model while resuming a grok-build
-              // session, or vice-versa) can't be applied with a live set_model — it
-              // errors MODEL_SWITCH_INCOMPATIBLE_AGENT. The session itself already
-              // loaded and replayed; just keep its own model instead of letting the
-              // whole resume crash with "Grok exited (code null)".
-              if (!isIncompatibleAgentError(e)) throw e;
-              this.host.appendLine(
-                `[resume] kept the session's own model; default '${defaultModel}' needs a different agent`,
-              );
-            }
+            // A resumed session's agent is fixed by its history, so a cross-agent
+            // default model (e.g. a Composer model while resuming a grok-build
+            // session, or vice-versa) can't be applied with a live set_model — it
+            // errors MODEL_SWITCH_INCOMPATIBLE_AGENT. The session itself already
+            // loaded and replayed; just keep its own model instead of letting the
+            // whole resume crash with "Grok exited (code null)".
+            if (!isIncompatibleAgentError(e)) throw e;
+            this.host.appendLine(
+              `[resume] kept the session's own model; default '${defaultModel}' needs a different agent`,
+            );
           }
           // Events stream during session/load; replay(post) is the host wrap-up
           // after the RPC settles (no webview-complete signal exists). `new` is
@@ -9728,18 +9706,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           replayAt = clock.now();
         });
         clock.record("replay(post)", clock.elapsed(replayAt));
-        if (threadWasEmpty) {
-          // Same row, same name, no error — an empty conversation, honestly.
-          const emptyAt = clock.now();
-          await client.newSession(defaultModel || undefined);
-          clock.record("new", clock.elapsed(emptyAt));
-          session.activeSessionId = client.sessionId;
-          session.hasHistory = false;
-        } else {
-          session.activeSessionId = resumeId;
-          session.hasHistory = true;
-        }
+        session.activeSessionId = resumeId;
         session.titleGenerated = true; // existing session, name already in storage
+        session.hasHistory = true;
 
         // Plan-gate restoration: the CLI replays its own current_mode_update
         // events during loadSession, which our modeChanged handler honors by
