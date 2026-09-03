@@ -309,16 +309,23 @@ describe("what the reuse and neighbour rules refuse to assume", () => {
     expect(body).not.toContain("list.entries");
   });
 
-  it("never leaves focus on the conversation it just deleted", () => {
-    // openSession returns WITHOUT touching focus when another view holds the
-    // session-load reservation. By then the old conversation is deleted and
-    // disposed, so an early return would leave `this.focused` on it and the
-    // next send would try to resume a deleted id — the zombie focus 2291258
-    // reverted, reached by a different door.
-    const at = src.indexOf("The neighbour can REFUSE");
+  it("asks the call whether it worked, never the world afterwards", () => {
+    // `openSession` declines when another view holds the load reservation, and
+    // by then the deleted conversation is disposed — so focus must not stay on
+    // it. The first attempt inferred that from `this.focused` after the await,
+    // and a review found two regressions in the inference: a user who clicked a
+    // DIFFERENT conversation mid-load had their choice replaced by a blank one,
+    // and a vanished id produced two blanks because openSession’s own fallback
+    // was not recognised as success. Global state after an await cannot answer
+    // "did this call work".
+    const at = src.indexOf("const tookUs = neighbour");
     expect(at).toBeGreaterThan(-1);
-    const branch = src.slice(at, at + 1400);
-    expect(branch).toContain("this.focused.activeSessionId !== neighbour.id");
+    const branch = src.slice(at, at + 900);
+    expect(branch).toContain("if (!tookUs) {");
     expect(branch).toContain("await this.startSession();");
+    // The discarded proxy must not come back.
+    expect(src).not.toContain("this.focused.activeSessionId !== neighbour.id");
+    // And the method has to actually report an outcome.
+    expect(src).toContain("private async openSession(id: string, sessionCwd?: string): Promise<boolean>");
   });
 });

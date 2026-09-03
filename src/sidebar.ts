@@ -12846,10 +12846,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // That is the zombie focus a review caught in `2291258`, arriving by a
       // different door. So the mint below is not only the empty-project case;
       // it is also what catches a neighbour that would not take us.
-      if (neighbour) {
-        await this.openSession(neighbour.id, neighbour.cwd);
-      }
-      if (!neighbour || this.focused.activeSessionId !== neighbour.id) {
+      const tookUs = neighbour
+        ? await this.openSession(neighbour.id, neighbour.cwd)
+        : false;
+      if (!tookUs) {
         this.focused = this.newLocalSession();
         // Neighbour rows already live in this project. A minted replacement
         // does not — without this it starts in the VS Code workspace folder
@@ -15885,7 +15885,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         session.hasHistory = true;
         this.pool.add(session);
       },
-      openLocalSession: (id, cwd) => this.openSession(id, cwd),
+      openLocalSession: async (id, cwd) => { await this.openSession(id, cwd); },
       seedWorktree: (record) => {
         this.worktreeCache = this.worktreeCache.filter((wt) => !pathsEqual(wt.path, record.path));
         this.worktreeCache.push(record);
@@ -17865,7 +17865,20 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    * it instantly (lossless buffer replay — no reload). Otherwise park the current
    * session and load this one cold from grok's on-disk history into a fresh member.
    */
-  private async openSession(id: string, sessionCwd?: string): Promise<void> {
+  /**
+   * Open a conversation locally. Resolves TRUE when this call took
+   * responsibility for the view — including when it had to fall back to a
+   * fresh conversation because the id had gone — and FALSE only when it
+   * declined outright because another view holds the load reservation.
+   *
+   * Callers used to infer that from `this.focused` afterwards, and two
+   * regressions came straight out of it: a user who clicked a DIFFERENT
+   * conversation while this one loaded had their choice replaced by a blank
+   * one, and a vanished id produced two blanks because this method's own
+   * fallback was not recognised as a success. Global state after an await
+   * cannot answer “did this call work”; only the call can.
+   */
+  private async openSession(id: string, sessionCwd?: string): Promise<boolean> {
     // The user's open starts HERE, not in startSession. See the note there.
     const clock = new OpenClock();
     const claim = this.reserveSessionLoad(id);
@@ -17874,7 +17887,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       void this.host.showInformationMessage(
         "This conversation is already being opened in another tab or view.",
       );
-      return;
+      return false;
     }
     let failure: unknown;
     try {
@@ -17912,13 +17925,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // a conversation is not a request to change which project you are in.
     // Desktop's own selectRepo does the whole switch; this is the half VS Code
     // needs because it has no folder to switch.
-    if (this.host.canSwitchWorkspaceFolder) return;
+    // The conversation is open either way; what follows is only the VS Code
+    // half of the switch. Success, not an early exit.
+    if (this.host.canSwitchWorkspaceFolder) return true;
     const openedIn = this.resolveLocalRepoTarget(this.sessionCwd(this.focused));
     if (openedIn && !pathsEqual(openedIn.cwd, this.selectedRepoCwd || "")) {
       this.selectedRepoCwd = openedIn.cwd;
       this.postRepoCatalog();
       this.postSessionsList();
     }
+    return true;
   }
 
   /**

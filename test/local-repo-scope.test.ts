@@ -71,7 +71,11 @@ describe("local repo scope", () => {
     // the folder would split them. Opening a conversation is not a request to
     // change which project you are in.
     const body = methodBody("// The history list follows the conversation the LOCAL user just opened.");
-    expect(body).toMatch(/if \(this\.host\.canSwitchWorkspaceFolder\) return;/);
+    // `return true` since openSession began reporting its outcome: the
+    // conversation IS open on this path, and only the VS Code half of the
+    // switch is skipped. Reading it as a failure would have made a caller
+    // mint a blank conversation over a perfectly good one.
+    expect(body).toMatch(/if \(this\.host\.canSwitchWorkspaceFolder\) return true;/);
     expect(body).toMatch(/this\.selectedRepoCwd = openedIn\.cwd;/);
   });
 
