@@ -12823,6 +12823,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         this.host.appendLine(`[sessions] delete failed for ${id}: ${(e as Error).message}`);
       }
     }
+    // Said once, here, so anything downstream can tell a deleted conversation
+    // from a live one without re-deriving it from an id that outlives the
+    // directory.
+    if (live) live.deleted = true;
     this.sessionCache.delete(id);
     this.removePlanReviews(id); // snapshots live outside grok's session dir
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
@@ -12863,19 +12867,21 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         await this.startSession();
       }
     }
-    let home =
-      neighbour
-        ? this.liveSessionById(neighbour.id)
-        : viewNeedsHome ? this.focused : undefined;
+    // Every watcher goes through `openRemoteSession`, the function that
+    // enforces one remote per conversation.
+    //
+    // Attaching them straight to a live neighbour skipped that check, and two
+    // browser tabs ended up on one conversation: the deleter's next message
+    // went into the tab that was already there, and refreshing then hit the
+    // conflicting-owner refusal and left them with nothing. Sharing between
+    // the desk and a remote is fine; between two remotes it is not, and this
+    // loop is not the place to invent an exception.
     for (const watcher of watchers) {
-      if (home) {
-        this.dropRemoteVoice(watcher);
-        this.focusRemoteSession(watcher, home, false);
-        continue;
-      }
+      this.dropRemoteVoice(watcher);
       if (neighbour) await this.openRemoteSession(watcher, neighbour.id, neighbour.cwd, false);
-      else await this.newRemoteSession(watcher, false);
-      home = this.remoteClients.active(watcher) ?? home;
+      // No neighbour, or it would not take them: a blank conversation of their
+      // own, which is what v4.1.4 did for every watcher.
+      if (!this.remoteClients.active(watcher)) await this.newRemoteSession(watcher, false);
     }
     if (watchers.length) this.postRepoCatalog();
     this.postSessionsList();
@@ -16479,6 +16485,17 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
    */
   private parkFocused(): void {
     const cur = this.focused;
+    // A DELETED conversation is not parked, whatever state it is holding.
+    //
+    // Re-homing after a delete opens the neighbour, and a COLD neighbour
+    // reaches here while `this.focused` is still the just-disposed object. If
+    // the person had typed a follow-up while the agent worked, the arm below
+    // put it BACK in the pool — and the list builder synthesizes a row for any
+    // pool member with no directory on disk, so the conversation they deleted
+    // reappeared. Reaping will not take it either, because a queued send
+    // counts as a draft. Deleting it a second time works, which is exactly the
+    // “it came back” complaint this change set out to fix, by a new route.
+    if (cur.deleted) return;
     const busy = cur.status === "working" || cur.status === "needs-you";
     if (cur.needsProvider || cur.strandedDraft || cur.queuedSends.length > 0) {
       this.pool.add(cur);

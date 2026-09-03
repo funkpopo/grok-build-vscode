@@ -219,7 +219,7 @@ describe("deleting a conversation re-homes to a neighbour", () => {
     expect(sidebar.startSession).not.toHaveBeenCalled();
   });
 
-  it("lands a watcher of the last conversation on the one replacement", async () => {
+  it("gives a watcher of the last conversation its own blank, not the desk’s", async () => {
     const sidebar = makeSidebar();
     const deleted = liveSession("only", { hasHistory: false });
     sidebar.focused = deleted;
@@ -229,9 +229,17 @@ describe("deleting a conversation re-homes to a neighbour", () => {
 
     await sidebar.deleteSession("only", undefined, "local");
 
+    // Sharing the desk’s replacement with ONE watcher would be fine — desk and
+    // remote may share. With two watchers it is the remote-plus-remote
+    // collision this loop now refuses, and making it safe for one but not two
+    // is a special case nobody would remember. So everybody gets their own,
+    // which is what v4.1.4 did. The cost is two EMPTY conversations instead of
+    // one, which is a price worth paying for a rule that fits in a sentence.
     expect(sidebar.focused.activeSessionId).toBe("minted-1");
-    expect(sidebar.remoteClients.active("watcher")).toBe(sidebar.focused);
-    expect(sidebar.startSession).toHaveBeenCalledTimes(1);
+    const watcherSession = sidebar.remoteClients.active("watcher");
+    expect(watcherSession).toBeTruthy();
+    expect(watcherSession).not.toBe(sidebar.focused);
+    expect(watcherSession.activeSessionId).not.toBe("only");
   });
 });
 
@@ -286,6 +294,45 @@ describe("minting a blank session reuses an unused empty one", () => {
     expect(sidebar.remoteClients.active("phone")).toBe(unused);
     expect(sidebar.focused).toBe(used);
     expect(sidebar.startSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("the cold-neighbour cases the first tests missed", () => {
+  const src = readFileSync("src/sidebar.ts", "utf8");
+
+  it("does not park the conversation it just deleted", () => {
+    // Re-homing opens the neighbour, and a COLD neighbour falls through to
+    // parkFocused while `this.focused` is still the disposed object. A queued
+    // follow-up (typed while the agent worked) made parkFocused put it BACK in
+    // the pool, and the list synthesizes a row for any pool member with no
+    // directory — so the deleted conversation reappeared. Every earlier test
+    // here seeded a LIVE sibling, which returns before parkFocused, so none of
+    // them could see it.
+    const at = src.indexOf("private parkFocused()");
+    expect(at).toBeGreaterThan(-1);
+    const body = src.slice(at, at + 1600);
+    const guard = body.indexOf("if (cur.deleted) return;");
+    const park = body.indexOf("this.pool.add(cur);");
+    expect(guard).toBeGreaterThan(-1);
+    expect(park).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(park);
+    // And the flag is set where the deletion happens, not inferred later.
+    expect(src).toContain("if (live) live.deleted = true;");
+  });
+
+  it("never hands a watcher a conversation another remote holds", () => {
+    // `focusRemoteSession` attaches without the exclusivity check that
+    // `openRemoteSession` performs. Two browser tabs then shared one
+    // conversation: the deleter’s next message went into the other tab’s
+    // conversation, and refreshing hit the conflicting-owner refusal and left
+    // them unbound. Desk-plus-remote sharing is fine; remote-plus-remote is not.
+    const at = src.indexOf("Every watcher goes through");
+    expect(at).toBeGreaterThan(-1);
+    const loop = src.slice(at, at + 1400);
+    expect(loop).toContain("await this.openRemoteSession(watcher");
+    expect(loop).not.toContain("focusRemoteSession(watcher");
+    // Refused or no neighbour: their own blank conversation, as v4.1.4 did.
+    expect(loop).toContain("await this.newRemoteSession(watcher, false);");
   });
 });
 
