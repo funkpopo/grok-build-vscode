@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 /**
  * Deleting the conversation you are looking at must not mint a replacement
  * while siblings remain, and minting a blank session must not add a second
@@ -285,5 +286,39 @@ describe("minting a blank session reuses an unused empty one", () => {
     expect(sidebar.remoteClients.active("phone")).toBe(unused);
     expect(sidebar.focused).toBe(used);
     expect(sidebar.startSession).not.toHaveBeenCalled();
+  });
+});
+
+describe("what the reuse and neighbour rules refuse to assume", () => {
+  const src = readFileSync("src/sidebar.ts", "utf8");
+
+  it("never adopts a conversation it only saw in a list", () => {
+    // `numMessages` is HARDCODED to 0 for every Codex and Claude row
+    // (provider-ui.ts, adapterListEntry), so a list field cannot say whether
+    // a conversation has been used. An earlier version read it as emptiness
+    // and would have let New Session adopt a conversation holding real work,
+    // sending the next message into it. Only live pool sessions qualify now,
+    // where emptiness is the host’s own state rather than an inference.
+    const at = src.indexOf("private findUnusedEmptySession");
+    expect(at).toBeGreaterThan(-1);
+    const body = src.slice(at, src.indexOf("private newLocalSession", at));
+    expect(body).not.toContain("buildSessionsList");
+    // The CODE form, not the word: the comment above the helper explains the
+    // premise it rejected, and a test that matched prose would fail on that.
+    expect(body).not.toContain("entry.numMessages");
+    expect(body).not.toContain("list.entries");
+  });
+
+  it("never leaves focus on the conversation it just deleted", () => {
+    // openSession returns WITHOUT touching focus when another view holds the
+    // session-load reservation. By then the old conversation is deleted and
+    // disposed, so an early return would leave `this.focused` on it and the
+    // next send would try to resume a deleted id — the zombie focus 2291258
+    // reverted, reached by a different door.
+    const at = src.indexOf("The neighbour can REFUSE");
+    expect(at).toBeGreaterThan(-1);
+    const branch = src.slice(at, at + 1400);
+    expect(branch).toContain("this.focused.activeSessionId !== neighbour.id");
+    expect(branch).toContain("await this.startSession();");
   });
 });

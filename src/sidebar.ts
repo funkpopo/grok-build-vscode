@@ -12838,9 +12838,18 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // different conversation is not moved.
     const neighbour = neighbourAfterDelete(visibleEntries, id);
     if (wasFocused) {
+      // The neighbour can REFUSE. `openSession` returns without touching focus
+      // when another view holds that session's load reservation — and by this
+      // point the conversation we were focused on is deleted and disposed, so
+      // returning early would leave `this.focused` pointing at it: the view
+      // still looks attached, and the next send tries to resume a deleted id.
+      // That is the zombie focus a review caught in `2291258`, arriving by a
+      // different door. So the mint below is not only the empty-project case;
+      // it is also what catches a neighbour that would not take us.
       if (neighbour) {
         await this.openSession(neighbour.id, neighbour.cwd);
-      } else {
+      }
+      if (!neighbour || this.focused.activeSessionId !== neighbour.id) {
         this.focused = this.newLocalSession();
         // Neighbour rows already live in this project. A minted replacement
         // does not — without this it starts in the VS Code workspace folder
@@ -16253,23 +16262,20 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       if (this.sessionHasLiveOwner(session)) continue;
       return { session, id, cwd: this.sessionCwd(session) };
     }
-    const list = this.buildSessionsList(
-      cwd,
-      { limit: Number.MAX_SAFE_INTEGER },
-      undefined,
-      scope,
-    );
-    for (const entry of list.entries) {
-      if (entry.id === excludeId) continue;
-      if (entry.customName || entry.pinnedAt || entry.worktreeLabel || entry.kind === "subagent") continue;
-      const live = this.liveSessionById(entry.id);
-      if (live) {
-        if (!this.sessionIsReusableEmpty(live) || this.sessionHasLiveOwner(live)) continue;
-        return { session: live, id: live.activeSessionId!, cwd: this.sessionCwd(live) };
-      }
-      if (entry.displayName !== "New session" && entry.numMessages !== 0) continue;
-      return { id: entry.id, cwd: entry.cwd || cwd };
-    }
+    // ONLY sessions this host is holding, never a row from the list.
+    //
+    // The cold-row branch that used to live here read `numMessages === 0` as
+    // “nobody has used this”. For Codex and Claude that field is HARDCODED to
+    // zero for every row (`provider-ui.ts`, adapterListEntry), so every
+    // conversation they own looked unused — and New Session would silently
+    // adopt one with somebody's work in it, sending their next message into a
+    // conversation they thought was new. An independent round caught it before
+    // release; a stale Grok shell that cannot be resumed was the same premise
+    // failing a second way.
+    //
+    // A live session in the pool is different in kind: emptiness is the host's
+    // own state, not an inference from a list field that means nothing here.
+    // So the reuse is narrower than first written, and only says what it knows.
     return undefined;
   }
 
